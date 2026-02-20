@@ -7,6 +7,7 @@ DEFAULT_INTERVAL=30
 REASONING_XHIGH_AGENTS="${AGENT_XHIGH_AGENTS:-pm coordinator architect}"
 REASONING_XHIGH_EFFORT="${AGENT_PLANNER_REASONING_EFFORT:-xhigh}"
 REASONING_DEFAULT_EFFORT="${AGENT_DEFAULT_REASONING_EFFORT:-none}"
+LOCK_HEARTBEAT_INTERVAL="${AGENT_LOCK_HEARTBEAT_INTERVAL:-30}"
 
 abs_path() {
   local path="$1"
@@ -60,6 +61,8 @@ Environment overrides:
                           default: xhigh (supports: default|null|none|minimal|low|medium|high|xhigh; null aliases to none)
   AGENT_DEFAULT_REASONING_EFFORT
                           default: none (aliases: default|null)
+  AGENT_LOCK_HEARTBEAT_INTERVAL
+                          default: 30 seconds
   AGENT_EXEC_CMD          optional custom command; bypasses built-in reasoning policy
   AGENT_TASKCTL           default: scripts/taskctl.sh
 USAGE
@@ -75,6 +78,15 @@ require_agent() {
 
 log() {
   printf '[%s] [%s] %s\n' "$(date '+%F %T')" "$AGENT" "$*"
+}
+
+run_taskctl() {
+  TASK_ROOT_DIR="$ROOT" "$TASKCTL" "$@"
+}
+
+sanitize_single_line() {
+  local text="$1"
+  printf '%s' "$text" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
 }
 
 is_valid_reasoning_effort() {
@@ -118,6 +130,17 @@ validate_reasoning_config() {
   REASONING_DEFAULT_EFFORT="$normalized_default"
 }
 
+validate_lock_config() {
+  [[ "$LOCK_HEARTBEAT_INTERVAL" =~ ^[0-9]+$ ]] || {
+    echo "invalid AGENT_LOCK_HEARTBEAT_INTERVAL: $LOCK_HEARTBEAT_INTERVAL (expected integer seconds > 0)" >&2
+    exit 1
+  }
+  (( LOCK_HEARTBEAT_INTERVAL > 0 )) || {
+    echo "invalid AGENT_LOCK_HEARTBEAT_INTERVAL: $LOCK_HEARTBEAT_INTERVAL (expected integer seconds > 0)" >&2
+    exit 1
+  }
+}
+
 agent_uses_xhigh_reasoning() {
   local item
   for item in $REASONING_XHIGH_AGENTS; do
@@ -151,6 +174,53 @@ field_value() {
   local file="$1"
   local key="$2"
   sed -n "s/^${key}: //p" "$file" | head -n1
+}
+
+extract_frontmatter_to_file() {
+  local source_file="$1"
+  local out_file="$2"
+  awk '
+    BEGIN { section = 0 }
+    /^---$/ { section++; next }
+    section == 1 { print }
+    section >= 2 { exit }
+  ' "$source_file" >"$out_file"
+}
+
+task_intended_write_targets() {
+  local task_file="$1"
+
+  command -v yq >/dev/null 2>&1 || {
+    echo "missing required command: yq" >&2
+    return 1
+  }
+
+  local frontmatter_file
+  frontmatter_file="$(mktemp)"
+  extract_frontmatter_to_file "$task_file" "$frontmatter_file"
+
+  if [[ ! -s "$frontmatter_file" ]]; then
+    rm -f "$frontmatter_file"
+    return 0
+  fi
+
+  local parsed_targets rc
+  if parsed_targets="$(yq -r '.intended_write_targets // [] | if type == "array" then .[] else empty end' "$frontmatter_file" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  rm -f "$frontmatter_file"
+
+  if [[ $rc -ne 0 ]]; then
+    echo "failed to parse intended_write_targets from task frontmatter: $task_file" >&2
+    return 1
+  fi
+
+  if [[ -n "$parsed_targets" ]]; then
+    printf '%s\n' "$parsed_targets" | sed '/^$/d'
+  fi
 }
 
 in_progress_task_path() {
@@ -193,6 +263,8 @@ first_in_progress_task() {
 build_prompt_file() {
   local task_file="$1"
   local prompt_file="$2"
+  shift 2
+  local -a write_targets=("$@")
   local role_file="$ROOT/roles/$AGENT.md"
 
   [[ -f "$role_file" ]] || { echo "missing role file: $role_file" >&2; exit 1; }
@@ -221,6 +293,116 @@ Execution requirements:
 - Update the task file's "## Result" section with concise outcomes and verification commands.
 - If blocked by dependency or ambiguity, clearly state blocker in the task file and exit non-zero.
 PROMPT
+
+  if (( ${#write_targets[@]} > 0 )); then
+    cat >>"$prompt_file" <<'PROMPT'
+- Worker lock policy is enforced from `intended_write_targets`; do not modify files outside declared targets.
+- If additional files must be modified, stop and block with a clear reason to request task metadata updates.
+
+Declared write targets:
+PROMPT
+    local target
+    for target in "${write_targets[@]}"; do
+      printf -- "- %s\n" "$target" >>"$prompt_file"
+    done
+  fi
+}
+
+acquire_task_write_locks() {
+  local task_id="$1"
+  local -n targets_ref="$2"
+  local -n acquired_ref="$3"
+  local -n lock_error_ref="$4"
+  lock_error_ref=""
+
+  local target lock_output rc
+  for target in "${targets_ref[@]}"; do
+    if lock_output="$(run_taskctl lock-acquire "$task_id" "$AGENT" "$target" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
+
+    if [[ $rc -eq 0 ]]; then
+      acquired_ref+=("$target")
+      continue
+    fi
+
+    lock_output="$(sanitize_single_line "$lock_output")"
+    if [[ $rc -eq 2 ]]; then
+      lock_error_ref="write lock conflict for target=$target; ${lock_output:-lock conflict}"
+      return 2
+    fi
+
+    lock_error_ref="write lock acquisition failed for target=$target (exit=$rc); ${lock_output:-taskctl lock-acquire failed}"
+    return 1
+  done
+
+  return 0
+}
+
+heartbeat_lock_targets_loop() {
+  local task_id="$1"
+  shift
+  local -a targets=("$@")
+
+  while true; do
+    sleep "$LOCK_HEARTBEAT_INTERVAL"
+    local target hb_output hb_rc
+    for target in "${targets[@]}"; do
+      if hb_output="$(run_taskctl lock-heartbeat "$task_id" "$AGENT" "$target" 2>&1)"; then
+        hb_rc=0
+      else
+        hb_rc=$?
+      fi
+
+      if [[ $hb_rc -ne 0 ]]; then
+        log "lock heartbeat failed for $task_id target=$target (exit=$hb_rc): $(sanitize_single_line "$hb_output")"
+      fi
+    done
+  done
+}
+
+start_lock_heartbeat_loop() {
+  local -n pid_ref="$1"
+  local task_id="$2"
+  shift 2
+  local -a targets=("$@")
+  pid_ref=""
+
+  if (( ${#targets[@]} == 0 )); then
+    return 0
+  fi
+
+  heartbeat_lock_targets_loop "$task_id" "${targets[@]}" &
+  pid_ref="$!"
+}
+
+stop_background_loop() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 0
+
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
+  fi
+}
+
+release_task_locks() {
+  local task_id="$1"
+  local output rc
+  if output="$(run_taskctl lock-release-task "$task_id" "$AGENT" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ $rc -ne 0 ]]; then
+    log "warning: lock release failed for $task_id (exit=$rc): $(sanitize_single_line "$output")"
+    return 1
+  fi
+
+  log "$(sanitize_single_line "$output")"
 }
 
 run_task() {
@@ -228,6 +410,21 @@ run_task() {
   local task_id
   task_id="$(field_value "$task_file" "id")"
   [[ -n "$task_id" ]] || task_id="$(basename "$task_file" .md)"
+
+  local -a write_targets=()
+  if ! mapfile -t write_targets < <(task_intended_write_targets "$task_file"); then
+    local metadata_reason
+    metadata_reason="worker failed to parse intended_write_targets metadata for $task_id"
+    local metadata_in_progress
+    metadata_in_progress="$(in_progress_task_path "$task_id")"
+    if [[ -f "$metadata_in_progress" ]]; then
+      run_taskctl block "$AGENT" "$task_id" "$metadata_reason" >/dev/null || true
+      log "blocked $task_id ($metadata_reason)"
+    else
+      log "$metadata_reason but task is no longer in progress"
+    fi
+    return
+  fi
 
   local run_dir="$ROOT/runtime/logs/$AGENT"
   mkdir -p "$run_dir"
@@ -237,12 +434,48 @@ run_task() {
 
   local prompt_file
   prompt_file="$(mktemp)"
-  "$TASKCTL" ensure-agent "$AGENT" --task "$task_file" >/dev/null
-  build_prompt_file "$task_file" "$prompt_file"
+  run_taskctl ensure-agent "$AGENT" --task "$task_file" >/dev/null
+  build_prompt_file "$task_file" "$prompt_file" "${write_targets[@]}"
 
   local reasoning_effort
   reasoning_effort="$(reasoning_effort_for_agent)"
-  log "starting $task_id (reasoning_effort=$reasoning_effort)"
+  log "starting $task_id (reasoning_effort=$reasoning_effort, write_targets=${#write_targets[@]})"
+
+  local in_progress_file
+  in_progress_file="$(in_progress_task_path "$task_id")"
+
+  local -a acquired_targets=()
+  local lock_error=""
+  local lock_rc=0
+  local heartbeat_pid=""
+
+  if (( ${#write_targets[@]} > 0 )); then
+    if acquire_task_write_locks "$task_id" write_targets acquired_targets lock_error; then
+      lock_rc=0
+    else
+      lock_rc=$?
+    fi
+
+    if [[ $lock_rc -ne 0 ]]; then
+      rm -f "$prompt_file"
+      release_task_locks "$task_id" >/dev/null 2>&1 || true
+      if [[ -f "$in_progress_file" ]]; then
+        run_taskctl block "$AGENT" "$task_id" "$lock_error" >/dev/null || true
+        log "blocked $task_id ($lock_error)"
+      else
+        local terminal_state
+        terminal_state="$(task_terminal_state "$task_id" || true)"
+        if [[ -n "$terminal_state" ]]; then
+          log "lock enforcement for $task_id failed after transition (state=$terminal_state, reason=$lock_error)"
+        else
+          log "lock enforcement for $task_id failed but task is no longer in progress (reason=$lock_error)"
+        fi
+      fi
+      return
+    fi
+
+    start_lock_heartbeat_loop heartbeat_pid "$task_id" "${acquired_targets[@]}"
+  fi
 
   set +e
   if [[ -n "${AGENT_EXEC_CMD:-}" ]]; then
@@ -253,14 +486,16 @@ run_task() {
   local rc=$?
   set -e
 
-  rm -f "$prompt_file"
+  stop_background_loop "$heartbeat_pid"
+  if (( ${#write_targets[@]} > 0 )); then
+    release_task_locks "$task_id" >/dev/null 2>&1 || true
+  fi
 
-  local in_progress_file
-  in_progress_file="$(in_progress_task_path "$task_id")"
+  rm -f "$prompt_file"
 
   if [[ $rc -eq 0 ]]; then
     if [[ -f "$in_progress_file" ]]; then
-      if "$TASKCTL" done "$AGENT" "$task_id" "Completed by worker; log: $log_file" >/dev/null; then
+      if run_taskctl done "$AGENT" "$task_id" "Completed by worker; log: $log_file" >/dev/null; then
         log "completed $task_id (log: $log_file)"
       else
         local terminal_state
@@ -282,7 +517,7 @@ run_task() {
     fi
   else
     if [[ -f "$in_progress_file" ]]; then
-      "$TASKCTL" block "$AGENT" "$task_id" "worker command failed (exit=$rc); see $log_file" >/dev/null || true
+      run_taskctl block "$AGENT" "$task_id" "worker command failed (exit=$rc); see $log_file" >/dev/null || true
       log "blocked $task_id (exit=$rc, log: $log_file)"
     else
       local terminal_state
@@ -302,7 +537,7 @@ main_loop() {
     task_file="$(first_in_progress_task)"
 
     if [[ -z "$task_file" ]]; then
-      "$TASKCTL" claim "$AGENT" >/tmp/agent-claim-${AGENT}.out 2>/tmp/agent-claim-${AGENT}.err || true
+      run_taskctl claim "$AGENT" >/tmp/agent-claim-${AGENT}.out 2>/tmp/agent-claim-${AGENT}.err || true
       task_file="$(first_in_progress_task)"
     fi
 
@@ -358,9 +593,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-"$TASKCTL" ensure-agent "$AGENT" >/dev/null
+run_taskctl ensure-agent "$AGENT" >/dev/null
 
 validate_reasoning_config
+validate_lock_config
 
 mkdir -p "$ROOT/runtime/logs/$AGENT" "$ROOT/runtime/pids"
 log "worker started (interval=${INTERVAL}s, once=$RUN_ONCE)"
