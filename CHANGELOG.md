@@ -16,6 +16,7 @@ All notable changes to this project are documented in this file.
 - Image-baked coordination baseline under `/opt/codex-baseline` with opt-in workspace seeding via `codex-init-workspace`.
 - `scripts/agents_ctl.sh once` mode to run per-agent `--once` workers in parallel and wait in a single session.
 - `scripts/coordination_repair.sh` helper to backfill missing coordination directories/prompts and re-ensure core agent lanes for older/incomplete workspaces.
+- Task template lock metadata contract verifier at `scripts/verify_task_template_lock_metadata_contract.sh`.
 
 ### Changed
 - `AGENTS.md` now documents background agent orchestration commands and files.
@@ -38,6 +39,7 @@ All notable changes to this project are documented in this file.
 - `Dockerfile.codex-dev` now bakes all `scripts/*.sh` into `/opt/codex-baseline/scripts`, and startup MOTD now lists all image-baked script paths so they are discoverable even before `/workspace/scripts` is seeded.
 - `/usr/local/bin/codex-entrypoint` no longer auto-bootstraps `/workspace`; coordination/scripts seeding now happens only when `codex-init-workspace` is run explicitly.
 - `scripts/agents_ctl.sh status` now cleans stale/invalid pid files automatically and validates pid ownership against the expected worker+agent command.
+- `coordination/templates/TASK_TEMPLATE.md` now includes `intended_write_targets`, `lock_scope`, and `lock_policy` lock metadata defaults for write-conflict-safe task orchestration.
 
 ## [0.1.0] - 2026-02-18
 ### Added

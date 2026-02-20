@@ -7,6 +7,9 @@ parent_task_id: none
 status: inbox
 priority: 50
 depends_on: []
+intended_write_targets: []
+lock_scope: file
+lock_policy: block_on_conflict
 created_at: 2026-02-19T00:00:00+0000
 updated_at: 2026-02-19T00:00:00+0000
 acceptance_criteria:
