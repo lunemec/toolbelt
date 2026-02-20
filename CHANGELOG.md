@@ -17,7 +17,7 @@ All notable changes to this project are documented in this file.
 - `scripts/agents_ctl.sh once` mode to run per-agent `--once` workers in parallel and wait in a single session.
 - `scripts/coordination_repair.sh` helper to backfill missing coordination directories/prompts and re-ensure core agent lanes for older/incomplete workspaces.
 - Task template lock metadata contract verifier at `scripts/verify_task_template_lock_metadata_contract.sh`.
-- `scripts/verify_taskctl_lock_contract.sh` contract/smoke verifier for lock lifecycle helpers and coding-task write-target validation.
+- `scripts/verify_taskctl_lock_contract.sh` contract/smoke verifier for lock lifecycle helpers, stale-lock reap audit behavior, and coding-task write-target validation.
 - `scripts/verify_agent_worker_lock_contract.sh` contract/smoke verifier for worker lock enforcement (conflict blocking, heartbeat updates, and lock release on success/failure).
 
 ### Changed
@@ -42,7 +42,7 @@ All notable changes to this project are documented in this file.
 - `/usr/local/bin/codex-entrypoint` no longer auto-bootstraps `/workspace`; coordination/scripts seeding now happens only when `codex-init-workspace` is run explicitly.
 - `scripts/agents_ctl.sh status` now cleans stale/invalid pid files automatically and validates pid ownership against the expected worker+agent command.
 - `coordination/templates/TASK_TEMPLATE.md` now includes `intended_write_targets`, `lock_scope`, and `lock_policy` lock metadata defaults for write-conflict-safe task orchestration.
-- `scripts/taskctl.sh` now includes lock lifecycle helpers (`lock-acquire`, `lock-heartbeat`, `lock-release`, `lock-release-task`), lock diagnostics (`lock-status`), stale lock cleanup (`lock-clean-stale --ttl`), and coding-task validation that enforces non-empty `intended_write_targets` for FE/BE/DB owners.
+- `scripts/taskctl.sh` now includes lock lifecycle helpers (`lock-acquire`, `lock-heartbeat`, `lock-release`, `lock-release-task`), lock diagnostics (`lock-status`), stale lock cleanup (`lock-clean-stale --ttl [--actor <agent>]`) gated to orchestrator lanes, per-reap audit reports under `coordination/reports/<actor>/`, and coding-task validation that enforces non-empty `intended_write_targets` for FE/BE/DB owners.
 - `scripts/agent_worker.sh` now enforces declared write-target locks during execution, blocks on lock conflicts with explicit reasons, maintains lock heartbeats, and releases held locks on both success and failure paths.
 
 ## [0.1.0] - 2026-02-18

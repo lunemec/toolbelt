@@ -68,6 +68,12 @@ run_taskctl() {
   TASK_ROOT_DIR="$smoke_root" "$TASKCTL" "$@"
 }
 
+run_taskctl_as() {
+  local actor_agent="$1"
+  shift
+  TASK_ROOT_DIR="$smoke_root" TASK_ACTOR_AGENT="$actor_agent" "$TASKCTL" "$@"
+}
+
 invalid_task_id="taskctl-lock-invalid-$(date +%s)-$$"
 set +e
 invalid_output="$(run_taskctl create "$invalid_task_id" "Missing write targets for FE" --to fe --from pm --priority 50 2>&1)"
@@ -141,8 +147,32 @@ trap 'rm -rf "$smoke_root"; rm -f "$tmp_frontmatter" "$tmp_lock_payload"' EXIT
 jq '.heartbeat_at = "1970-01-01T00:00:00+0000"' "$stale_lock_file" >"$tmp_lock_payload"
 mv "$tmp_lock_payload" "$stale_lock_file"
 
-clean_output="$(run_taskctl lock-clean-stale --ttl 60)"
+set +e
+denied_output="$(run_taskctl_as fe lock-clean-stale --ttl 60 2>&1)"
+denied_rc=$?
+set -e
+
+if [[ "$denied_rc" -eq 0 ]]; then
+  echo "expected non-orchestrator stale-lock reap to fail" >&2
+  exit 1
+fi
+require_contains "$denied_output" "lock-clean-stale denied" "non-orchestrator stale-lock reap denied"
+
+clean_output="$(run_taskctl_as coordinator lock-clean-stale --ttl 60)"
 require_contains "$clean_output" "removed=1" "stale lock removed"
+require_contains "$clean_output" "actor_agent=coordinator" "stale lock cleanup actor reflected"
+
+audit_report_file="$(printf '%s\n' "$clean_output" | sed -n 's/^reaped lock: .* audit_report=\(.*\)$/\1/p' | head -n1)"
+if [[ -z "$audit_report_file" || ! -f "$audit_report_file" ]]; then
+  echo "expected audit report for reaped stale lock" >&2
+  echo "$clean_output" >&2
+  exit 1
+fi
+
+audit_content="$(cat "$audit_report_file")"
+require_contains "$audit_content" "- action: lock-clean-stale" "audit action marker"
+require_contains "$audit_content" "- actor_agent: coordinator" "audit actor marker"
+require_contains "$audit_content" "- canonical_target: docs/stale-lock.md" "audit canonical target marker"
 
 stale_after_clean="$(run_taskctl lock-status docs/stale-lock.md)"
 fresh_after_clean="$(run_taskctl lock-status docs/fresh-lock.md)"

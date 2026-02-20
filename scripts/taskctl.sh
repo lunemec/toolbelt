@@ -8,6 +8,7 @@ DEFAULT_CREATOR_AGENT="${TASK_DEFAULT_CREATOR:-pm}"
 DEFAULT_PRIORITY="${TASK_DEFAULT_PRIORITY:-50}"
 LOCK_ROOT="$ROOT/locks/files"
 DEFAULT_LOCK_STALE_TTL_SECONDS="${TASK_LOCK_STALE_TTL_SECONDS:-3600}"
+LOCK_REAPER_AGENTS_RAW="${TASK_LOCK_REAPER_AGENTS:-pm coordinator}"
 
 abs_path() {
   local path="$1"
@@ -59,7 +60,7 @@ Usage:
   $0 lock-release <TASK_ID> <owner_agent> <target>
   $0 lock-release-task <TASK_ID> <owner_agent>
   $0 lock-status <target>
-  $0 lock-clean-stale [--ttl <seconds>]
+  $0 lock-clean-stale [--ttl <seconds>] [--actor <agent>]
   $0 ensure-agent <agent> [--task <TASK_ID|TASK_FILE>] [--force]
   $0 list [agent]
 
@@ -68,6 +69,8 @@ Notes:
   - Blocked tasks are moved out of active queues and a blocker report task is queued for creator_agent.
   - Agents are dynamic skill names (examples: pm, designer, architect, fe, be, db, review).
   - Coding-owner tasks (fe/be/db) must declare at least one --write-target path.
+  - lock-clean-stale requires orchestrator actor identity via --actor or TASK_ACTOR_AGENT.
+  - Default stale-lock reaper lanes are "pm coordinator" (override with TASK_LOCK_REAPER_AGENTS).
   - ensure-agent creates role prompts when missing and refreshes when role prompt is unfit for the current task context.
 USAGE
 }
@@ -225,6 +228,44 @@ normalize_ttl_seconds() {
     exit 1
   }
   printf '%d' "$ttl"
+}
+
+normalize_agent_list() {
+  local raw="$1"
+  raw="${raw//,/ }"
+  printf '%s' "$raw" | tr -s '[:space:]' ' ' | sed -E 's/^ //; s/ $//'
+}
+
+agent_in_space_list() {
+  local needle="$1"
+  local haystack="$2"
+  local item
+  for item in $haystack; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+require_lock_reap_actor_allowed() {
+  local actor_agent="$1"
+  local allowed_agents="$2"
+
+  [[ -n "$actor_agent" ]] || {
+    echo "lock-clean-stale requires actor identity (--actor <agent> or TASK_ACTOR_AGENT)" >&2
+    return 1
+  }
+
+  require_agent "$actor_agent"
+
+  [[ -n "$allowed_agents" ]] || {
+    echo "lock-clean-stale has no allowed reaper lanes configured (TASK_LOCK_REAPER_AGENTS)" >&2
+    return 1
+  }
+
+  if ! agent_in_space_list "$actor_agent" "$allowed_agents"; then
+    echo "lock-clean-stale denied: actor_agent=$actor_agent allowed_reaper_agents=\"$allowed_agents\"" >&2
+    return 2
+  fi
 }
 
 canonicalize_target_path() {
@@ -515,6 +556,53 @@ lock_is_stale() {
   (( age > ttl_seconds ))
 }
 
+write_lock_reap_audit_report() {
+  local actor_agent="$1"
+  local lock_file="$2"
+  local ttl_seconds="$3"
+  local now_epoch="$4"
+
+  local task_id owner_agent canonical_target acquired_at heartbeat_at
+  task_id="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+  owner_agent="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+  canonical_target="$(lock_payload_field "$lock_file" "canonical_target" 2>/dev/null || true)"
+  acquired_at="$(lock_payload_field "$lock_file" "acquired_at" 2>/dev/null || true)"
+  heartbeat_at="$(lock_payload_field "$lock_file" "heartbeat_at" 2>/dev/null || true)"
+
+  local reference_ts reference_epoch age_seconds
+  reference_ts="${heartbeat_at:-$acquired_at}"
+  age_seconds=""
+  if [[ -n "$reference_ts" ]]; then
+    reference_epoch="$(timestamp_to_epoch "$reference_ts" 2>/dev/null || true)"
+    if [[ -n "$reference_epoch" ]]; then
+      age_seconds=$((now_epoch - reference_epoch))
+    fi
+  fi
+
+  local report_dir report_file
+  report_dir="$ROOT/reports/$actor_agent"
+  mkdir -p "$report_dir"
+  report_file="$report_dir/LOCK-REAP-$(date +%Y%m%d%H%M%S%N).md"
+
+  cat >"$report_file" <<EOF
+# Lock Reap Audit
+
+- action: lock-clean-stale
+- actor_agent: $actor_agent
+- reaped_at: $(now)
+- ttl_seconds: $ttl_seconds
+- lock_file: $lock_file
+- canonical_target: ${canonical_target:-unknown}
+- task_id: ${task_id:-unknown}
+- owner_agent: ${owner_agent:-unknown}
+- acquired_at: ${acquired_at:-unknown}
+- heartbeat_at: ${heartbeat_at:-unknown}
+- stale_age_seconds: ${age_seconds:-unknown}
+EOF
+
+  printf '%s' "$report_file"
+}
+
 lock_status() {
   local target="$1"
   local canonical_target lock_file
@@ -535,7 +623,12 @@ lock_status() {
 
 lock_clean_stale() {
   local ttl_seconds="$1"
+  local actor_agent="${2:-${TASK_ACTOR_AGENT:-}}"
   ttl_seconds="$(normalize_ttl_seconds "$ttl_seconds")"
+
+  local allowed_reaper_agents
+  allowed_reaper_agents="$(normalize_agent_list "$LOCK_REAPER_AGENTS_RAW")"
+  require_lock_reap_actor_allowed "$actor_agent" "$allowed_reaper_agents" || return $?
 
   ensure_lock_root
   local now_epoch
@@ -550,18 +643,19 @@ lock_clean_stale() {
   for lock_file in "$LOCK_ROOT"/*.lock; do
     scanned=$((scanned + 1))
     if lock_is_stale "$lock_file" "$ttl_seconds" "$now_epoch"; then
-      local canonical_target
+      local canonical_target report_file
       canonical_target="$(lock_payload_field "$lock_file" "canonical_target" 2>/dev/null || true)"
+      report_file="$(write_lock_reap_audit_report "$actor_agent" "$lock_file" "$ttl_seconds" "$now_epoch")"
       remove_lock_payload "$lock_file"
       removed=$((removed + 1))
-      echo "reaped lock: file=$lock_file canonical_target=${canonical_target:-unknown}"
+      echo "reaped lock: file=$lock_file canonical_target=${canonical_target:-unknown} actor_agent=$actor_agent audit_report=$report_file"
     else
       kept=$((kept + 1))
     fi
   done
   shopt -u nullglob
 
-  echo "lock-clean-stale summary: scanned=$scanned removed=$removed kept=$kept ttl_seconds=$ttl_seconds"
+  echo "lock-clean-stale summary: actor_agent=$actor_agent scanned=$scanned removed=$removed kept=$kept ttl_seconds=$ttl_seconds"
 }
 
 extract_frontmatter_to_file() {
@@ -1520,12 +1614,17 @@ main() {
       ;;
     lock-clean-stale)
       local ttl_seconds="$DEFAULT_LOCK_STALE_TTL_SECONDS"
+      local actor_agent="${TASK_ACTOR_AGENT:-}"
       shift
 
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --ttl)
             ttl_seconds="$2"
+            shift 2
+            ;;
+          --actor)
+            actor_agent="$2"
             shift 2
             ;;
           *)
@@ -1536,7 +1635,7 @@ main() {
         esac
       done
 
-      lock_clean_stale "$ttl_seconds"
+      lock_clean_stale "$ttl_seconds" "$actor_agent"
       ;;
     ensure-agent)
       [[ $# -ge 2 ]] || { usage; exit 1; }
