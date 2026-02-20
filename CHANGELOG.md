@@ -47,6 +47,10 @@ All notable changes to this project are documented in this file.
 - `scripts/taskctl.sh` now includes lock lifecycle helpers (`lock-acquire`, `lock-heartbeat`, `lock-release`, `lock-release-task`), lock diagnostics (`lock-status`), stale lock cleanup (`lock-clean-stale --ttl [--actor <agent>]`) gated to orchestrator lanes, per-reap audit reports under `coordination/reports/<actor>/`, and coding-task validation that enforces non-empty `intended_write_targets` for FE/BE/DB owners.
 - `scripts/agent_worker.sh` now enforces declared write-target locks during execution, blocks on lock conflicts with explicit reasons, maintains lock heartbeats, and releases held locks on both success and failure paths.
 - `scripts/verify_top_level_prompt_contract.sh` and `scripts/verify_coordinator_instructions_contract.sh` now assert the full clarification completion gate, including the unresolved critical assumptions clause.
+- `coordination/README.md` now documents the strict clarification loop contract, coding-task write-target metadata requirements, lock command usage, stale-lock reaper constraints, and the single-entry full workflow validation command.
+
+### Verified
+- `scripts/verify_orchestrator_clarification_suite.sh` passes, covering clarification gating, specialist blocker routing, task lock lifecycle/conflict handling, worker heartbeat/release behavior, and template metadata persistence.
 
 ## [0.1.0] - 2026-02-18
 ### Added

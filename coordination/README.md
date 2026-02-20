@@ -30,6 +30,14 @@ When an agent blocks a task:
 
 This gives every sub-agent a stop-and-escalate path.
 
+## Clarification Loop Contract
+Top-level orchestrator behavior (`pm` or `coordinator`) must follow an iterative requirement-clarification loop:
+- Ask exactly one user-facing clarification question per turn.
+- Use specialist outputs to either refine requirements or generate the next single clarification question.
+- Do not switch from `clarify` to `plan`/execution-closeout without explicit user confirmation.
+- Keep clarification open while blocker report tasks (`BLK-*`) are unresolved.
+- Keep clarification open while unresolved critical assumptions remain.
+
 ## Commands
 Use `scripts/taskctl.sh`:
 
@@ -68,8 +76,8 @@ scripts/taskctl.sh create TASK-1000 "Plan profile feature" --to pm --from pm --p
 
 # delegate to another skill agent
 scripts/taskctl.sh delegate pm designer TASK-1001 "Create UX spec" --priority 20 --parent TASK-1000
-scripts/taskctl.sh delegate designer fe TASK-1002 "Implement settings screen" --priority 30 --parent TASK-1001
-scripts/taskctl.sh delegate architect be TASK-1003 "Implement profile API" --priority 30 --parent TASK-1000
+scripts/taskctl.sh delegate designer fe TASK-1002 "Implement settings screen" --priority 30 --parent TASK-1001 --write-target src/ui/settings-screen.tsx
+scripts/taskctl.sh delegate architect be TASK-1003 "Implement profile API" --priority 30 --parent TASK-1000 --write-target src/api/profile.go
 
 # claim + transition
 scripts/taskctl.sh claim fe
@@ -80,6 +88,33 @@ scripts/taskctl.sh block be TASK-1003 "Waiting on auth contract"
 scripts/taskctl.sh list
 scripts/taskctl.sh list pm
 ```
+
+### Write-Target Metadata
+- Coding-owner tasks (`fe`, `be`, `db`) must declare one or more `--write-target <path>` values on `create`/`delegate`.
+- Declared targets are written to task frontmatter as:
+  - `intended_write_targets`
+  - `lock_scope: file`
+  - `lock_policy: block_on_conflict`
+- Non-coding tasks may leave `intended_write_targets` empty.
+
+### Lock Commands
+Use lock commands for diagnostics, manual recovery, or explicit lock lifecycle control:
+
+```bash
+# lock lifecycle primitives
+scripts/taskctl.sh lock-acquire TASK-1002 fe src/ui/settings-screen.tsx
+scripts/taskctl.sh lock-heartbeat TASK-1002 fe src/ui/settings-screen.tsx
+scripts/taskctl.sh lock-release TASK-1002 fe src/ui/settings-screen.tsx
+scripts/taskctl.sh lock-release-task TASK-1002 fe
+
+# inspect lock holder/payload
+scripts/taskctl.sh lock-status src/ui/settings-screen.tsx
+
+# stale lock reaping (orchestrator-only actor lanes by default: pm/coordinator)
+scripts/taskctl.sh lock-clean-stale --ttl 900 --actor coordinator
+```
+
+`lock-clean-stale` is denied for non-orchestrator lanes unless `TASK_LOCK_REAPER_AGENTS` is configured to allow them. Successful stale reaps emit audit reports under `coordination/reports/<actor>/LOCK-REAP-*.md`.
 
 ## Background Workers
 Run workers using `scripts/agents_ctl.sh`:
@@ -112,9 +147,24 @@ Worker behavior:
 - `status` auto-cleans stale PID files from dead workers.
 - For terminals that do not preserve detached background jobs across calls, use `agents_ctl.sh once` instead of `start`.
 
+## Full Workflow Validation
+Run the single-entry suite to validate clarification and lock behavior end-to-end:
+
+```bash
+scripts/verify_orchestrator_clarification_suite.sh
+```
+
+Coverage includes:
+- top-level prompt contract (single-question clarification + phase/completion gates),
+- coordinator instructions contract (iterative clarification loop),
+- task template lock metadata persistence,
+- taskctl lock lifecycle and stale-reap audit behavior,
+- worker lock conflict/heartbeat/release behavior,
+- clarification workflow simulation for blocker routing and completion gating.
+
 ## Suggested Operating Pattern
-1. Give requirements to `pm` in one conversation.
-2. `pm` decomposes and delegates to skill agents.
-3. Specialists may delegate further to lower-layer specialists.
-4. Blockers automatically route back to the task creator.
-5. Orchestrator resolves blockers and continues delegation until acceptance criteria are met.
+1. Start with `pm` (or `coordinator`) and iterate one clarification question at a time.
+2. Delegate specialist discovery tasks during clarification whenever uncertainty blocks precision.
+3. Ensure coding tasks include `--write-target` metadata so workers can enforce lock safety.
+4. Resolve blocker report tasks before declaring clarification complete.
+5. Finalize planning/execution checkpoints only after explicit user confirmation and closed clarification gates.
