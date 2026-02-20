@@ -6,6 +6,8 @@ TEMPLATE="$ROOT/templates/TASK_TEMPLATE.md"
 DEFAULT_OWNER_AGENT="${TASK_DEFAULT_OWNER:-pm}"
 DEFAULT_CREATOR_AGENT="${TASK_DEFAULT_CREATOR:-pm}"
 DEFAULT_PRIORITY="${TASK_DEFAULT_PRIORITY:-50}"
+LOCK_ROOT="$ROOT/locks/files"
+DEFAULT_LOCK_STALE_TTL_SECONDS="${TASK_LOCK_STALE_TTL_SECONDS:-3600}"
 
 abs_path() {
   local path="$1"
@@ -46,12 +48,18 @@ now() {
 usage() {
   cat <<USAGE
 Usage:
-  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>]
-  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>]
+  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]...
+  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]...
   $0 assign <TASK_ID> <agent>
   $0 claim <agent>
   $0 done <agent> <TASK_ID> [NOTE]
   $0 block <agent> <TASK_ID> <REASON>
+  $0 lock-acquire <TASK_ID> <owner_agent> <target>
+  $0 lock-heartbeat <TASK_ID> <owner_agent> <target>
+  $0 lock-release <TASK_ID> <owner_agent> <target>
+  $0 lock-release-task <TASK_ID> <owner_agent>
+  $0 lock-status <target>
+  $0 lock-clean-stale [--ttl <seconds>]
   $0 ensure-agent <agent> [--task <TASK_ID|TASK_FILE>] [--force]
   $0 list [agent]
 
@@ -59,6 +67,7 @@ Notes:
   - Lower priority number means higher urgency (0 is highest).
   - Blocked tasks are moved out of active queues and a blocker report task is queued for creator_agent.
   - Agents are dynamic skill names (examples: pm, designer, architect, fe, be, db, review).
+  - Coding-owner tasks (fe/be/db) must declare at least one --write-target path.
   - ensure-agent creates role prompts when missing and refreshes when role prompt is unfit for the current task context.
 USAGE
 }
@@ -195,6 +204,492 @@ compute_fit_signature() {
   else
     printf '%s' "$payload" | cksum | awk '{print $1}'
   fi
+}
+
+require_command() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo "missing required command: $cmd" >&2
+    exit 1
+  }
+}
+
+normalize_ttl_seconds() {
+  local ttl="$1"
+  is_integer "$ttl" || {
+    echo "ttl must be an integer (seconds): $ttl" >&2
+    exit 1
+  }
+  (( ttl > 0 )) || {
+    echo "ttl must be > 0 seconds: $ttl" >&2
+    exit 1
+  }
+  printf '%d' "$ttl"
+}
+
+canonicalize_target_path() {
+  local target="$1"
+  [[ -n "$target" ]] || {
+    echo "target path must not be empty" >&2
+    exit 1
+  }
+
+  local absolute_target
+  if [[ "$target" == /* ]]; then
+    absolute_target="$(abs_path "$target")"
+  else
+    absolute_target="$(abs_path "/workspace/$target")"
+  fi
+
+  [[ "$absolute_target" == "/workspace" || "$absolute_target" == /workspace/* ]] || {
+    echo "target must resolve under /workspace: $target" >&2
+    exit 1
+  }
+
+  if [[ "$absolute_target" == "/workspace" ]]; then
+    printf '.'
+  else
+    printf '%s' "${absolute_target#/workspace/}"
+  fi
+}
+
+compute_text_hash() {
+  local value="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$value" | cksum | awk '{print $1}'
+  fi
+}
+
+lock_path_for_canonical_target() {
+  local canonical_target="$1"
+  local target_hash
+  target_hash="$(compute_text_hash "$canonical_target")"
+  printf '%s/%s.lock' "$LOCK_ROOT" "$target_hash"
+}
+
+lock_path_for_target() {
+  local target="$1"
+  local canonical_target
+  canonical_target="$(canonicalize_target_path "$target")"
+  lock_path_for_canonical_target "$canonical_target"
+}
+
+ensure_lock_root() {
+  mkdir -p "$LOCK_ROOT"
+}
+
+write_lock_payload_file() {
+  local out_file="$1"
+  local task_id="$2"
+  local owner_agent="$3"
+  local canonical_target="$4"
+  local acquired_at="$5"
+  local heartbeat_at="$6"
+
+  require_command jq
+  jq -cn \
+    --arg task_id "$task_id" \
+    --arg owner_agent "$owner_agent" \
+    --arg canonical_target "$canonical_target" \
+    --arg acquired_at "$acquired_at" \
+    --arg heartbeat_at "$heartbeat_at" \
+    '{
+      task_id: $task_id,
+      owner_agent: $owner_agent,
+      canonical_target: $canonical_target,
+      acquired_at: $acquired_at,
+      heartbeat_at: $heartbeat_at
+    }' >"$out_file"
+}
+
+create_lock_payload_file_atomic() {
+  local lock_file="$1"
+  local task_id="$2"
+  local owner_agent="$3"
+  local canonical_target="$4"
+  local acquired_at="$5"
+  local heartbeat_at="$6"
+
+  ensure_lock_root
+  local tmp_file
+  tmp_file="$(mktemp "$LOCK_ROOT/.lock-create.XXXXXX")"
+  write_lock_payload_file "$tmp_file" "$task_id" "$owner_agent" "$canonical_target" "$acquired_at" "$heartbeat_at"
+
+  if ln "$tmp_file" "$lock_file" 2>/dev/null; then
+    rm -f "$tmp_file"
+    return 0
+  fi
+
+  rm -f "$tmp_file"
+  return 1
+}
+
+read_lock_payload() {
+  local lock_file="$1"
+  [[ -f "$lock_file" ]] || return 1
+  cat "$lock_file"
+}
+
+remove_lock_payload() {
+  local lock_file="$1"
+  rm -f "$lock_file"
+}
+
+lock_payload_field() {
+  local lock_file="$1"
+  local field="$2"
+  require_command jq
+  jq -r --arg field "$field" '.[$field] // ""' "$lock_file"
+}
+
+lock_owner_matches() {
+  local lock_file="$1"
+  local task_id="$2"
+  local owner_agent="$3"
+  [[ -f "$lock_file" ]] || return 1
+
+  local existing_task_id existing_owner
+  existing_task_id="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+  existing_owner="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+  [[ "$existing_task_id" == "$task_id" && "$existing_owner" == "$owner_agent" ]]
+}
+
+lock_acquire() {
+  local task_id="$1"
+  local owner_agent="$2"
+  local target="$3"
+
+  require_task_id "$task_id"
+  require_agent "$owner_agent"
+
+  local canonical_target lock_file timestamp
+  canonical_target="$(canonicalize_target_path "$target")"
+  lock_file="$(lock_path_for_canonical_target "$canonical_target")"
+  timestamp="$(now)"
+
+  ensure_lock_root
+
+  if [[ -f "$lock_file" ]]; then
+    if lock_owner_matches "$lock_file" "$task_id" "$owner_agent"; then
+      local acquired_at
+      acquired_at="$(lock_payload_field "$lock_file" "acquired_at" 2>/dev/null || true)"
+      acquired_at="${acquired_at:-$timestamp}"
+      write_lock_payload_file "$lock_file" "$task_id" "$owner_agent" "$canonical_target" "$acquired_at" "$timestamp"
+      echo "lock already held: target=$canonical_target task_id=$task_id owner_agent=$owner_agent"
+      return 0
+    fi
+
+    local holder_task holder_owner
+    holder_task="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+    holder_owner="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+    echo "lock conflict: target=$canonical_target holder_task_id=${holder_task:-unknown} holder_owner_agent=${holder_owner:-unknown}" >&2
+    return 2
+  fi
+
+  if create_lock_payload_file_atomic "$lock_file" "$task_id" "$owner_agent" "$canonical_target" "$timestamp" "$timestamp"; then
+    echo "lock acquired: target=$canonical_target task_id=$task_id owner_agent=$owner_agent"
+    return 0
+  fi
+
+  if [[ -f "$lock_file" ]] && lock_owner_matches "$lock_file" "$task_id" "$owner_agent"; then
+    echo "lock already held: target=$canonical_target task_id=$task_id owner_agent=$owner_agent"
+    return 0
+  fi
+
+  local holder_task holder_owner
+  holder_task="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+  holder_owner="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+  echo "lock conflict: target=$canonical_target holder_task_id=${holder_task:-unknown} holder_owner_agent=${holder_owner:-unknown}" >&2
+  return 2
+}
+
+lock_heartbeat() {
+  local task_id="$1"
+  local owner_agent="$2"
+  local target="$3"
+
+  require_task_id "$task_id"
+  require_agent "$owner_agent"
+
+  local canonical_target lock_file
+  canonical_target="$(canonicalize_target_path "$target")"
+  lock_file="$(lock_path_for_canonical_target "$canonical_target")"
+
+  [[ -f "$lock_file" ]] || {
+    echo "lock not found for heartbeat: target=$canonical_target" >&2
+    return 1
+  }
+
+  if ! lock_owner_matches "$lock_file" "$task_id" "$owner_agent"; then
+    local holder_task holder_owner
+    holder_task="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+    holder_owner="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+    echo "lock heartbeat denied: target=$canonical_target holder_task_id=${holder_task:-unknown} holder_owner_agent=${holder_owner:-unknown}" >&2
+    return 2
+  fi
+
+  local acquired_at
+  acquired_at="$(lock_payload_field "$lock_file" "acquired_at" 2>/dev/null || true)"
+  acquired_at="${acquired_at:-$(now)}"
+  write_lock_payload_file "$lock_file" "$task_id" "$owner_agent" "$canonical_target" "$acquired_at" "$(now)"
+  echo "lock heartbeat updated: target=$canonical_target task_id=$task_id owner_agent=$owner_agent"
+}
+
+lock_release() {
+  local task_id="$1"
+  local owner_agent="$2"
+  local target="$3"
+
+  require_task_id "$task_id"
+  require_agent "$owner_agent"
+
+  local canonical_target lock_file
+  canonical_target="$(canonicalize_target_path "$target")"
+  lock_file="$(lock_path_for_canonical_target "$canonical_target")"
+
+  if [[ ! -f "$lock_file" ]]; then
+    echo "lock already clear: target=$canonical_target"
+    return 0
+  fi
+
+  if ! lock_owner_matches "$lock_file" "$task_id" "$owner_agent"; then
+    local holder_task holder_owner
+    holder_task="$(lock_payload_field "$lock_file" "task_id" 2>/dev/null || true)"
+    holder_owner="$(lock_payload_field "$lock_file" "owner_agent" 2>/dev/null || true)"
+    echo "lock release denied: target=$canonical_target holder_task_id=${holder_task:-unknown} holder_owner_agent=${holder_owner:-unknown}" >&2
+    return 2
+  fi
+
+  remove_lock_payload "$lock_file"
+  echo "lock released: target=$canonical_target task_id=$task_id owner_agent=$owner_agent"
+}
+
+lock_release_task() {
+  local task_id="$1"
+  local owner_agent="$2"
+
+  require_task_id "$task_id"
+  require_agent "$owner_agent"
+
+  ensure_lock_root
+
+  local released=0
+  local lock_file
+  shopt -s nullglob
+  for lock_file in "$LOCK_ROOT"/*.lock; do
+    if lock_owner_matches "$lock_file" "$task_id" "$owner_agent"; then
+      remove_lock_payload "$lock_file"
+      released=$((released + 1))
+    fi
+  done
+  shopt -u nullglob
+
+  echo "lock-release-task: task_id=$task_id owner_agent=$owner_agent released=$released"
+}
+
+timestamp_to_epoch() {
+  local timestamp="$1"
+  date -d "$timestamp" '+%s'
+}
+
+lock_is_stale() {
+  local lock_file="$1"
+  local ttl_seconds="$2"
+  local now_epoch="$3"
+
+  local heartbeat_at acquired_at reference_ts
+  heartbeat_at="$(lock_payload_field "$lock_file" "heartbeat_at" 2>/dev/null || true)"
+  acquired_at="$(lock_payload_field "$lock_file" "acquired_at" 2>/dev/null || true)"
+  reference_ts="${heartbeat_at:-$acquired_at}"
+
+  [[ -n "$reference_ts" ]] || return 0
+
+  local reference_epoch
+  reference_epoch="$(timestamp_to_epoch "$reference_ts" 2>/dev/null || true)"
+  [[ -n "$reference_epoch" ]] || return 0
+
+  local age
+  age=$((now_epoch - reference_epoch))
+  (( age > ttl_seconds ))
+}
+
+lock_status() {
+  local target="$1"
+  local canonical_target lock_file
+  canonical_target="$(canonicalize_target_path "$target")"
+  lock_file="$(lock_path_for_canonical_target "$canonical_target")"
+
+  echo "canonical_target: $canonical_target"
+  echo "lock_file: $lock_file"
+
+  if [[ ! -f "$lock_file" ]]; then
+    echo "status: unlocked"
+    return 0
+  fi
+
+  echo "status: locked"
+  read_lock_payload "$lock_file"
+}
+
+lock_clean_stale() {
+  local ttl_seconds="$1"
+  ttl_seconds="$(normalize_ttl_seconds "$ttl_seconds")"
+
+  ensure_lock_root
+  local now_epoch
+  now_epoch="$(date '+%s')"
+
+  local scanned=0
+  local removed=0
+  local kept=0
+
+  local lock_file
+  shopt -s nullglob
+  for lock_file in "$LOCK_ROOT"/*.lock; do
+    scanned=$((scanned + 1))
+    if lock_is_stale "$lock_file" "$ttl_seconds" "$now_epoch"; then
+      local canonical_target
+      canonical_target="$(lock_payload_field "$lock_file" "canonical_target" 2>/dev/null || true)"
+      remove_lock_payload "$lock_file"
+      removed=$((removed + 1))
+      echo "reaped lock: file=$lock_file canonical_target=${canonical_target:-unknown}"
+    else
+      kept=$((kept + 1))
+    fi
+  done
+  shopt -u nullglob
+
+  echo "lock-clean-stale summary: scanned=$scanned removed=$removed kept=$kept ttl_seconds=$ttl_seconds"
+}
+
+extract_frontmatter_to_file() {
+  local source_file="$1"
+  local out_file="$2"
+  awk '
+    BEGIN { section = 0 }
+    /^---$/ { section++; next }
+    section == 1 { print }
+    section >= 2 { exit }
+  ' "$source_file" >"$out_file"
+}
+
+task_intended_write_target_count() {
+  local task_file="$1"
+  require_command yq
+
+  local frontmatter_file
+  frontmatter_file="$(mktemp)"
+  extract_frontmatter_to_file "$task_file" "$frontmatter_file"
+
+  if [[ ! -s "$frontmatter_file" ]]; then
+    rm -f "$frontmatter_file"
+    echo "unable to extract task frontmatter: $task_file" >&2
+    return 1
+  fi
+
+  if ! yq -e '.intended_write_targets | type == "array"' "$frontmatter_file" >/dev/null 2>&1; then
+    rm -f "$frontmatter_file"
+    echo "task missing intended_write_targets array: $task_file" >&2
+    return 1
+  fi
+
+  local count
+  count="$(yq -r '.intended_write_targets | length' "$frontmatter_file")"
+  rm -f "$frontmatter_file"
+  printf '%s' "$count"
+}
+
+agent_requires_write_targets() {
+  local agent="$1"
+  case "$agent" in
+    fe|frontend|front-end|be|backend|back-end|db|database|data-store)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_write_target_requirement() {
+  local owner_agent="$1"
+  shift
+  local -a targets=("$@")
+
+  if ! agent_requires_write_targets "$owner_agent"; then
+    return 0
+  fi
+
+  (( ${#targets[@]} > 0 )) || {
+    echo "coding tasks for owner_agent=$owner_agent require non-empty intended_write_targets (pass --write-target <path>)" >&2
+    return 1
+  }
+}
+
+validate_task_write_target_policy() {
+  local task_file="$1"
+  local owner_agent="$2"
+
+  if ! agent_requires_write_targets "$owner_agent"; then
+    return 0
+  fi
+
+  local count
+  count="$(task_intended_write_target_count "$task_file")" || return 1
+  (( count > 0 )) || {
+    echo "coding tasks for owner_agent=$owner_agent require non-empty intended_write_targets: $task_file" >&2
+    return 1
+  }
+}
+
+canonicalize_write_targets() {
+  local -a targets=("$@")
+  local -a normalized=()
+  local target canonical_target existing
+
+  for target in "${targets[@]}"; do
+    [[ -n "$target" ]] || continue
+    canonical_target="$(canonicalize_target_path "$target")"
+    local seen=0
+    for existing in "${normalized[@]}"; do
+      if [[ "$existing" == "$canonical_target" ]]; then
+        seen=1
+        break
+      fi
+    done
+    if [[ "$seen" -eq 0 ]]; then
+      normalized+=("$canonical_target")
+    fi
+  done
+
+  printf '%s\n' "${normalized[@]}"
+}
+
+yaml_quote_single() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
+
+yaml_inline_list() {
+  local -a values=("$@")
+  if (( ${#values[@]} == 0 )); then
+    printf '[]'
+    return 0
+  fi
+
+  local index
+  local rendered="["
+  for index in "${!values[@]}"; do
+    if (( index > 0 )); then
+      rendered+=", "
+    fi
+    rendered+="$(yaml_quote_single "${values[$index]}")"
+  done
+  rendered+="]"
+  printf '%s' "$rendered"
 }
 
 role_current_signature() {
@@ -663,11 +1158,23 @@ create_task() {
   local creator="$4"
   local priority="$5"
   local parent_task_id="${6:-}"
+  shift 6
+  local -a requested_targets=("$@")
+  local -a write_targets=()
 
   require_task_id "$task_id"
   require_agent "$owner"
   require_agent "$creator"
   priority="$(normalize_priority "$priority")"
+
+  if (( ${#requested_targets[@]} > 0 )); then
+    while IFS= read -r target; do
+      [[ -n "$target" ]] || continue
+      write_targets+=("$target")
+    done < <(canonicalize_write_targets "${requested_targets[@]}")
+  fi
+
+  validate_write_target_requirement "$owner" "${write_targets[@]}"
 
   [[ -f "$TEMPLATE" ]] || { echo "missing template: $TEMPLATE" >&2; exit 1; }
 
@@ -701,6 +1208,12 @@ create_task() {
     set_field "$out" "depends_on" "[]"
   fi
 
+  if (( ${#write_targets[@]} > 0 )); then
+    set_field "$out" "intended_write_targets" "$(yaml_inline_list "${write_targets[@]}")"
+  fi
+
+  validate_task_write_target_policy "$out" "$owner"
+
   ensure_agent_scaffold "$owner" "$out"
 
   echo "created $out"
@@ -717,6 +1230,7 @@ assign_task() {
   local src
   src="$(find "$ROOT/inbox" -type f -name "${task_id}.md" | head -n1)"
   [[ -n "$src" ]] || { echo "task not found in inbox queues: $task_id" >&2; exit 1; }
+  validate_task_write_target_policy "$src" "$target_agent"
 
   local priority
   priority="$(field_value "$src" "priority")"
@@ -744,9 +1258,30 @@ claim_task() {
 
   ensure_agent_scaffold "$agent"
 
-  local next
-  next="$(find "$ROOT/inbox/$agent" -type f -name '*.md' | sort | head -n1)"
-  [[ -n "$next" ]] || { echo "no tasks in inbox/$agent"; exit 0; }
+  local next=""
+  local invalid_count=0
+  local candidate
+
+  while IFS= read -r candidate; do
+    local owner_agent
+    owner_agent="$(field_value "$candidate" "owner_agent")"
+    owner_agent="${owner_agent:-$agent}"
+    if validate_task_write_target_policy "$candidate" "$owner_agent"; then
+      next="$candidate"
+      break
+    fi
+    invalid_count=$((invalid_count + 1))
+    echo "skipping unclaimable task for $agent: $candidate" >&2
+  done < <(find "$ROOT/inbox/$agent" -type f -name '*.md' | sort)
+
+  if [[ -z "$next" ]]; then
+    if [[ "$invalid_count" -gt 0 ]]; then
+      echo "no claimable tasks in inbox/$agent (fix intended_write_targets metadata)"
+    else
+      echo "no tasks in inbox/$agent"
+    fi
+    exit 0
+  fi
 
   local base
   base="$(basename "$next")"
@@ -871,6 +1406,7 @@ main() {
       local creator="$DEFAULT_CREATOR_AGENT"
       local priority="$DEFAULT_PRIORITY"
       local parent=""
+      local -a write_targets=()
       shift 3
 
       while [[ $# -gt 0 ]]; do
@@ -891,6 +1427,10 @@ main() {
             parent="$2"
             shift 2
             ;;
+          --write-target)
+            write_targets+=("$2")
+            shift 2
+            ;;
           *)
             echo "unknown arg: $1" >&2
             usage
@@ -899,7 +1439,7 @@ main() {
         esac
       done
 
-      create_task "$task_id" "$title" "$owner" "$creator" "$priority" "$parent"
+      create_task "$task_id" "$title" "$owner" "$creator" "$priority" "$parent" "${write_targets[@]}"
       ;;
     delegate)
       [[ $# -ge 5 ]] || { usage; exit 1; }
@@ -909,6 +1449,7 @@ main() {
       local title="$5"
       local priority="$DEFAULT_PRIORITY"
       local parent=""
+      local -a write_targets=()
       shift 5
 
       while [[ $# -gt 0 ]]; do
@@ -921,6 +1462,10 @@ main() {
             parent="$2"
             shift 2
             ;;
+          --write-target)
+            write_targets+=("$2")
+            shift 2
+            ;;
           *)
             echo "unknown arg: $1" >&2
             usage
@@ -929,7 +1474,7 @@ main() {
         esac
       done
 
-      create_task "$task_id" "$title" "$to_agent" "$from_agent" "$priority" "$parent"
+      create_task "$task_id" "$title" "$to_agent" "$from_agent" "$priority" "$parent" "${write_targets[@]}"
       ;;
     assign)
       [[ $# -eq 3 ]] || { usage; exit 1; }
@@ -952,6 +1497,46 @@ main() {
       shift 2
       local reason="$*"
       transition_task block "$agent" "$task_id" "$reason"
+      ;;
+    lock-acquire)
+      [[ $# -eq 4 ]] || { usage; exit 1; }
+      lock_acquire "$2" "$3" "$4"
+      ;;
+    lock-heartbeat)
+      [[ $# -eq 4 ]] || { usage; exit 1; }
+      lock_heartbeat "$2" "$3" "$4"
+      ;;
+    lock-release)
+      [[ $# -eq 4 ]] || { usage; exit 1; }
+      lock_release "$2" "$3" "$4"
+      ;;
+    lock-release-task)
+      [[ $# -eq 3 ]] || { usage; exit 1; }
+      lock_release_task "$2" "$3"
+      ;;
+    lock-status)
+      [[ $# -eq 2 ]] || { usage; exit 1; }
+      lock_status "$2"
+      ;;
+    lock-clean-stale)
+      local ttl_seconds="$DEFAULT_LOCK_STALE_TTL_SECONDS"
+      shift
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --ttl)
+            ttl_seconds="$2"
+            shift 2
+            ;;
+          *)
+            echo "unknown arg: $1" >&2
+            usage
+            exit 1
+            ;;
+        esac
+      done
+
+      lock_clean_stale "$ttl_seconds"
       ;;
     ensure-agent)
       [[ $# -ge 2 ]] || { usage; exit 1; }
