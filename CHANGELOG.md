@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file.
 - `scripts/verify_agent_worker_lock_contract.sh` contract/smoke verifier for worker lock enforcement (conflict blocking, heartbeat updates, and lock release on success/failure).
 - `scripts/verify_clarification_workflow_contract.sh` end-to-end orchestration simulation verifier for blocker routing and clarification completion gate logic.
 - `scripts/verify_orchestrator_clarification_suite.sh` single-entry verification suite for all clarification and locking contracts.
+- `scripts/verify_agent_worker_reasoning_contract.sh` contract verifier proving per-agent reasoning selection isolation (`coordinator` planner effort vs downstream default effort with no sticky leakage).
 
 ### Changed
 - `AGENTS.md` now documents background agent orchestration commands and files.
@@ -50,7 +51,7 @@ All notable changes to this project are documented in this file.
 - `coordination/README.md` now documents the strict clarification loop contract, coding-task write-target metadata requirements, lock command usage, stale-lock reaper constraints, and the single-entry full workflow validation command.
 
 ### Verified
-- `scripts/verify_orchestrator_clarification_suite.sh` passes, covering clarification gating, specialist blocker routing, task lock lifecycle/conflict handling, worker heartbeat/release behavior, and template metadata persistence.
+- `scripts/verify_orchestrator_clarification_suite.sh` passes, covering clarification gating, specialist blocker routing, task lock lifecycle/conflict handling, worker heartbeat/release behavior, per-agent reasoning isolation, and template metadata persistence.
 
 ## [0.1.0] - 2026-02-18
 ### Added

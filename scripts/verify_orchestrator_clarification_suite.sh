@@ -21,6 +21,7 @@ run_check "coordinator instructions contract" "$SCRIPT_DIR/verify_coordinator_in
 run_check "task template lock metadata contract" "$SCRIPT_DIR/verify_task_template_lock_metadata_contract.sh"
 run_check "taskctl lock contract" "$SCRIPT_DIR/verify_taskctl_lock_contract.sh"
 run_check "agent worker lock contract" "$SCRIPT_DIR/verify_agent_worker_lock_contract.sh"
+run_check "agent worker reasoning contract" "$SCRIPT_DIR/verify_agent_worker_reasoning_contract.sh"
 run_check "clarification workflow contract" "$SCRIPT_DIR/verify_clarification_workflow_contract.sh"
 
 echo "orchestrator clarification suite checks passed"
