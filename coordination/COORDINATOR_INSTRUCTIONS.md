@@ -35,6 +35,11 @@ Use this file as the operating contract for a single top-level orchestrator (`pm
 - Delegate to skills, not technologies (examples: `designer`, `architect`, `fe`, `be`, `db`, `qa`, `review`).
 - Keep tasks small and testable.
 - Prefer explicit prompts over broad goals.
+- Delegations to resolved coding-owner lanes still require explicit `--write-target`; coding-owner auto-target lanes resolve via CLI `--coding-owner-lanes` > `TASK_CODING_OWNER_LANES` > default `fe,be,db`.
+- For resolved coding-owner lanes, `taskctl` auto-includes each task's in-progress task file as an additional enforced target.
+- If a queued task is reassigned with `taskctl assign` to a resolved coding owner, stale coding-owner self task-file targets are pruned and the new owner-lane self target is preserved as the only coding-owner self target.
+- `create`/`delegate` auto-bootstrap task-local sidecars at `coordination/task_prompts/<TASK_ID>/{prompt,context,deliverables,validation}/000.md`; fill these when providing strict runtime instructions.
+- Worker runtime prompts are assembled only from task-local sections (`Prompt`, `Context`, `Deliverables`, `Validation`) and never merge `coordination/roles/*.md`.
 
 ## Blocker Handling
 - When a child task is blocked, a priority-`000` blocker report is queued to the creator agent.
@@ -47,3 +52,9 @@ Use this file as the operating contract for a single top-level orchestrator (`pm
 - `pm` gathers detail and delegates to the right skill folders.
 - Specialists can further delegate to sub-specialists.
 - Pipeline can have arbitrary depth as long as creator/owner chain is maintained.
+
+## Baseline Repair Safety
+- `scripts/coordination_repair.sh` performs a safe baseline refresh by invoking `codex-init-workspace --force`.
+- Safe refresh scope: `/workspace/scripts/**` and `/workspace/coordination/{README.md,COORDINATOR_INSTRUCTIONS.md,prompts/**,roles/**,templates/**,examples/**}`.
+- Preserved scope: `/workspace/coordination/{inbox,in_progress,done,blocked,reports,runtime,task_prompts}/**`.
+- This ensures active queues, history, runtime state, and task-local prompt sidecars are never clobbered during repair.

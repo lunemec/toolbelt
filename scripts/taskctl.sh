@@ -9,6 +9,9 @@ DEFAULT_PRIORITY="${TASK_DEFAULT_PRIORITY:-50}"
 LOCK_ROOT="$ROOT/locks/files"
 DEFAULT_LOCK_STALE_TTL_SECONDS="${TASK_LOCK_STALE_TTL_SECONDS:-3600}"
 LOCK_REAPER_AGENTS_RAW="${TASK_LOCK_REAPER_AGENTS:-pm coordinator}"
+DEFAULT_CODING_OWNER_LANES_RAW="fe,be,db"
+CODING_OWNER_LANES_ENV_RAW="${TASK_CODING_OWNER_LANES:-$DEFAULT_CODING_OWNER_LANES_RAW}"
+CODING_OWNER_LANES_OVERRIDE_RAW=""
 
 abs_path() {
   local path="$1"
@@ -49,10 +52,10 @@ now() {
 usage() {
   cat <<USAGE
 Usage:
-  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]...
-  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]...
-  $0 assign <TASK_ID> <agent>
-  $0 claim <agent>
+  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]... [--coding-owner-lanes <agents>]
+  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]... [--coding-owner-lanes <agents>]
+  $0 assign <TASK_ID> <agent> [--coding-owner-lanes <agents>]
+  $0 claim <agent> [--coding-owner-lanes <agents>]
   $0 done <agent> <TASK_ID> [NOTE]
   $0 block <agent> <TASK_ID> <REASON>
   $0 lock-acquire <TASK_ID> <owner_agent> <target>
@@ -68,7 +71,8 @@ Notes:
   - Lower priority number means higher urgency (0 is highest).
   - Blocked tasks are moved out of active queues and a blocker report task is queued for creator_agent.
   - Agents are dynamic skill names (examples: pm, designer, architect, fe, be, db, review).
-  - Coding-owner tasks (fe/be/db) must declare at least one --write-target path.
+  - Tasks owned by resolved coding-owner lanes must declare at least one --write-target path.
+  - Coding-owner auto-target lanes default to "fe,be,db" (set TASK_CODING_OWNER_LANES; override once with --coding-owner-lanes).
   - lock-clean-stale requires orchestrator actor identity via --actor or TASK_ACTOR_AGENT.
   - Default stale-lock reaper lanes are "pm coordinator" (override with TASK_LOCK_REAPER_AGENTS).
   - ensure-agent creates role prompts when missing and refreshes when role prompt is unfit for the current task context.
@@ -234,6 +238,36 @@ normalize_agent_list() {
   local raw="$1"
   raw="${raw//,/ }"
   printf '%s' "$raw" | tr -s '[:space:]' ' ' | sed -E 's/^ //; s/ $//'
+}
+
+set_coding_owner_lanes_override() {
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || {
+    echo "--coding-owner-lanes requires a non-empty value" >&2
+    exit 1
+  }
+  CODING_OWNER_LANES_OVERRIDE_RAW="$raw"
+}
+
+resolve_coding_owner_lanes() {
+  local raw="$CODING_OWNER_LANES_ENV_RAW"
+  if [[ -n "$CODING_OWNER_LANES_OVERRIDE_RAW" ]]; then
+    raw="$CODING_OWNER_LANES_OVERRIDE_RAW"
+  fi
+
+  local normalized
+  normalized="$(normalize_agent_list "$raw")"
+  normalized="$(printf '%s' "$normalized" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$normalized" ]] || normalized="$(normalize_agent_list "$DEFAULT_CODING_OWNER_LANES_RAW")"
+
+  local deduped=""
+  local lane
+  for lane in $normalized; do
+    require_agent "$lane"
+    deduped="$(append_unique_word "$deduped" "$lane")"
+  done
+
+  printf '%s' "$deduped"
 }
 
 agent_in_space_list() {
@@ -695,16 +729,68 @@ task_intended_write_target_count() {
   printf '%s' "$count"
 }
 
+task_intended_write_targets() {
+  local task_file="$1"
+  require_command yq
+
+  local frontmatter_file
+  frontmatter_file="$(mktemp)"
+  extract_frontmatter_to_file "$task_file" "$frontmatter_file"
+
+  if [[ ! -s "$frontmatter_file" ]]; then
+    rm -f "$frontmatter_file"
+    echo "unable to extract task frontmatter: $task_file" >&2
+    return 1
+  fi
+
+  if ! yq -e '.intended_write_targets | type == "array"' "$frontmatter_file" >/dev/null 2>&1; then
+    rm -f "$frontmatter_file"
+    echo "task missing intended_write_targets array: $task_file" >&2
+    return 1
+  fi
+
+  yq -r '.intended_write_targets[]? // empty' "$frontmatter_file"
+  rm -f "$frontmatter_file"
+}
+
 agent_requires_write_targets() {
   local agent="$1"
-  case "$agent" in
-    fe|frontend|front-end|be|backend|back-end|db|database|data-store)
+  local coding_owner_lanes
+  coding_owner_lanes="$(resolve_coding_owner_lanes)"
+  agent_in_space_list "$agent" "$coding_owner_lanes"
+}
+
+owner_auto_includes_taskfile_target() {
+  local agent="$1"
+  agent_requires_write_targets "$agent"
+}
+
+coding_owner_auto_target_agents() {
+  local coding_owner_lanes
+  coding_owner_lanes="$(resolve_coding_owner_lanes)"
+  printf '%s\n' $coding_owner_lanes
+}
+
+task_in_progress_write_target() {
+  local task_id="$1"
+  local owner_agent="$2"
+  canonicalize_target_path "$ROOT/in_progress/$owner_agent/${task_id}.md"
+}
+
+is_coding_owner_taskfile_target() {
+  local task_id="$1"
+  local candidate_target="$2"
+
+  local coding_owner owner_target
+  while IFS= read -r coding_owner; do
+    [[ -n "$coding_owner" ]] || continue
+    owner_target="$(task_in_progress_write_target "$task_id" "$coding_owner")"
+    if [[ "$candidate_target" == "$owner_target" ]]; then
       return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+    fi
+  done < <(coding_owner_auto_target_agents)
+
+  return 1
 }
 
 validate_write_target_requirement() {
@@ -736,6 +822,40 @@ validate_task_write_target_policy() {
     echo "coding tasks for owner_agent=$owner_agent require non-empty intended_write_targets: $task_file" >&2
     return 1
   }
+}
+
+refresh_assign_self_taskfile_target() {
+  local task_file="$1"
+  local task_id="$2"
+  local owner_agent="$3"
+
+  if ! owner_auto_includes_taskfile_target "$owner_agent"; then
+    return 0
+  fi
+
+  local owner_target
+  owner_target="$(task_in_progress_write_target "$task_id" "$owner_agent")"
+
+  local -a refreshed_targets=()
+  local target canonical_target
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    canonical_target="$(canonicalize_target_path "$target")"
+    if is_coding_owner_taskfile_target "$task_id" "$canonical_target"; then
+      continue
+    fi
+    refreshed_targets+=("$canonical_target")
+  done < <(task_intended_write_targets "$task_file")
+
+  refreshed_targets+=("$owner_target")
+
+  local -a normalized_targets=()
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    normalized_targets+=("$target")
+  done < <(canonicalize_write_targets "${refreshed_targets[@]}")
+
+  set_field "$task_file" "intended_write_targets" "$(yaml_inline_list "${normalized_targets[@]}")"
 }
 
 canonicalize_write_targets() {
@@ -1245,6 +1365,17 @@ find_existing_task() {
     ! -path "$ROOT/roles/*" | head -n1
 }
 
+ensure_task_prompt_sidecar() {
+  local task_id="$1"
+  local sidecar_root="$ROOT/task_prompts/$task_id"
+  local section
+
+  for section in prompt context deliverables validation; do
+    mkdir -p "$sidecar_root/$section"
+    [[ -f "$sidecar_root/$section/000.md" ]] || : >"$sidecar_root/$section/000.md"
+  done
+}
+
 create_task() {
   local task_id="$1"
   local title="$2"
@@ -1254,6 +1385,7 @@ create_task() {
   local parent_task_id="${6:-}"
   shift 6
   local -a requested_targets=("$@")
+  local -a explicit_write_targets=()
   local -a write_targets=()
 
   require_task_id "$task_id"
@@ -1264,11 +1396,25 @@ create_task() {
   if (( ${#requested_targets[@]} > 0 )); then
     while IFS= read -r target; do
       [[ -n "$target" ]] || continue
-      write_targets+=("$target")
+      explicit_write_targets+=("$target")
     done < <(canonicalize_write_targets "${requested_targets[@]}")
   fi
 
-  validate_write_target_requirement "$owner" "${write_targets[@]}"
+  validate_write_target_requirement "$owner" "${explicit_write_targets[@]}"
+  write_targets=("${explicit_write_targets[@]}")
+
+  if owner_auto_includes_taskfile_target "$owner"; then
+    write_targets+=("$(task_in_progress_write_target "$task_id" "$owner")")
+  fi
+
+  if (( ${#write_targets[@]} > 0 )); then
+    local -a normalized_write_targets=()
+    while IFS= read -r target; do
+      [[ -n "$target" ]] || continue
+      normalized_write_targets+=("$target")
+    done < <(canonicalize_write_targets "${write_targets[@]}")
+    write_targets=("${normalized_write_targets[@]}")
+  fi
 
   [[ -f "$TEMPLATE" ]] || { echo "missing template: $TEMPLATE" >&2; exit 1; }
 
@@ -1308,6 +1454,7 @@ create_task() {
 
   validate_task_write_target_policy "$out" "$owner"
 
+  ensure_task_prompt_sidecar "$task_id"
   ensure_agent_scaffold "$owner" "$out"
 
   echo "created $out"
@@ -1339,6 +1486,7 @@ assign_task() {
   set_field "$dst" "owner_agent" "$target_agent"
   set_field "$dst" "status" "inbox"
   set_field "$dst" "updated_at" "$(now)"
+  refresh_assign_self_taskfile_target "$dst" "$task_id" "$target_agent"
 
   ensure_agent_scaffold "$target_agent" "$dst"
 
@@ -1525,6 +1673,10 @@ main() {
             write_targets+=("$2")
             shift 2
             ;;
+          --coding-owner-lanes)
+            set_coding_owner_lanes_override "${2:-}"
+            shift 2
+            ;;
           *)
             echo "unknown arg: $1" >&2
             usage
@@ -1560,6 +1712,10 @@ main() {
             write_targets+=("$2")
             shift 2
             ;;
+          --coding-owner-lanes)
+            set_coding_owner_lanes_override "${2:-}"
+            shift 2
+            ;;
           *)
             echo "unknown arg: $1" >&2
             usage
@@ -1571,12 +1727,47 @@ main() {
       create_task "$task_id" "$title" "$to_agent" "$from_agent" "$priority" "$parent" "${write_targets[@]}"
       ;;
     assign)
-      [[ $# -eq 3 ]] || { usage; exit 1; }
-      assign_task "$2" "$3"
+      [[ $# -ge 3 ]] || { usage; exit 1; }
+      local task_id="$2"
+      local target_agent="$3"
+      shift 3
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --coding-owner-lanes)
+            set_coding_owner_lanes_override "${2:-}"
+            shift 2
+            ;;
+          *)
+            echo "unknown arg: $1" >&2
+            usage
+            exit 1
+            ;;
+        esac
+      done
+
+      assign_task "$task_id" "$target_agent"
       ;;
     claim)
-      [[ $# -eq 2 ]] || { usage; exit 1; }
-      claim_task "$2"
+      [[ $# -ge 2 ]] || { usage; exit 1; }
+      local agent="$2"
+      shift 2
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --coding-owner-lanes)
+            set_coding_owner_lanes_override "${2:-}"
+            shift 2
+            ;;
+          *)
+            echo "unknown arg: $1" >&2
+            usage
+            exit 1
+            ;;
+        esac
+      done
+
+      claim_task "$agent"
       ;;
     done)
       [[ $# -ge 3 ]] || { usage; exit 1; }

@@ -61,9 +61,9 @@ seed_from_baseline() {
   if command -v codex-init-workspace >/dev/null 2>&1; then
     log "seeding missing baseline files via codex-init-workspace"
     if [[ "$QUIET" -eq 1 ]]; then
-      codex-init-workspace --workspace "$WORKSPACE_ROOT" --quiet
+      codex-init-workspace --workspace "$WORKSPACE_ROOT" --force --quiet
     else
-      codex-init-workspace --workspace "$WORKSPACE_ROOT"
+      codex-init-workspace --workspace "$WORKSPACE_ROOT" --force
     fi
     return 0
   fi

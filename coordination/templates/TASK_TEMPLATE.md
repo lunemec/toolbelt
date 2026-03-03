@@ -22,6 +22,7 @@ Write the exact instructions for the target skill agent.
 
 ## Context
 Business or technical background and constraints.
+Task-local sidecar overrides embedded execution sections when present: `coordination/task_prompts/<TASK_ID>/{prompt,context,deliverables,validation}/*.md`.
 
 ## Deliverables
 List concrete files/outputs expected.

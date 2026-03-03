@@ -9,7 +9,6 @@ trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p "$WORKDIR/bin"
 ln -s "$WORKSPACE_ROOT/scripts" "$WORKDIR/scripts"
 mkdir -p "$WORKDIR/coordination"
-ln -s "$WORKSPACE_ROOT/coordination/roles" "$WORKDIR/coordination/roles"
 mkdir -p "$WORKDIR/coordination/in_progress/coordinator" "$WORKDIR/coordination/in_progress/fe"
 
 cat > "$WORKDIR/coordination/in_progress/coordinator/coord-task.md" <<'TASK'
@@ -101,7 +100,11 @@ run_worker_once() {
   local agent="$1"
   (
     cd "$WORKDIR"
-    AGENT_ROOT_DIR=coordination "$WORKSPACE_ROOT/scripts/agent_worker.sh" "$agent" --once >/dev/null
+    AGENT_ROOT_DIR=coordination \
+    AGENT_XHIGH_AGENTS="pm coordinator architect" \
+    AGENT_PLANNER_REASONING_EFFORT=xhigh \
+    AGENT_DEFAULT_REASONING_EFFORT=none \
+    "$WORKSPACE_ROOT/scripts/agent_worker.sh" "$agent" --once >/dev/null
   )
 }
 

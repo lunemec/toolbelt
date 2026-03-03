@@ -260,29 +260,113 @@ first_in_progress_task() {
   find "$ROOT/in_progress/$AGENT" -maxdepth 1 -type f -name '*.md' | sort | head -n1
 }
 
+has_non_whitespace_content() {
+  local content="$1"
+  printf '%s' "$content" | grep -q '[^[:space:]]'
+}
+
+task_sidecar_root() {
+  local task_id="$1"
+  printf '%s/task_prompts/%s' "$ROOT" "$task_id"
+}
+
+extract_task_section() {
+  local task_file="$1"
+  local section_name="$2"
+
+  awk -v section_name="$section_name" '
+    BEGIN { in_section = 0 }
+    $0 == "## " section_name { in_section = 1; next }
+    in_section && /^## [^#]/ { exit }
+    in_section { print }
+  ' "$task_file"
+}
+
+read_sidecar_section_fragments() {
+  local sidecar_root="$1"
+  local section_key="$2"
+  local section_name="$3"
+  local section_dir="$sidecar_root/$section_key"
+
+  [[ -d "$section_dir" ]] || return 0
+  [[ -r "$section_dir" && -x "$section_dir" ]] || {
+    echo "unreadable sidecar section directory for task section ${section_name}: $section_dir" >&2
+    return 1
+  }
+
+  local -a fragments=()
+  mapfile -t fragments < <(find "$section_dir" -maxdepth 1 -type f -name '*.md' ! -name '.*' -printf '%f\n' | sort)
+
+  local fragment
+  for fragment in "${fragments[@]}"; do
+    cat "$section_dir/$fragment"
+    printf '\n'
+  done
+}
+
 build_prompt_file() {
   local task_file="$1"
   local prompt_file="$2"
   shift 2
   local -a write_targets=("$@")
-  local role_file="$ROOT/roles/$AGENT.md"
+  local task_id task_title owner_agent creator_agent
+  task_id="$(field_value "$task_file" "id")"
+  [[ -n "$task_id" ]] || task_id="$(basename "$task_file" .md)"
+  task_title="$(field_value "$task_file" "title")"
+  owner_agent="$(field_value "$task_file" "owner_agent")"
+  creator_agent="$(field_value "$task_file" "creator_agent")"
 
-  [[ -f "$role_file" ]] || { echo "missing role file: $role_file" >&2; exit 1; }
+  local sidecar_root sidecar_present=0
+  sidecar_root="$(task_sidecar_root "$task_id")"
+  if [[ -e "$sidecar_root" ]]; then
+    [[ -d "$sidecar_root" ]] || {
+      echo "task sidecar path is not a directory: $sidecar_root" >&2
+      return 1
+    }
+    [[ -r "$sidecar_root" && -x "$sidecar_root" ]] || {
+      echo "task sidecar root is unreadable: $sidecar_root" >&2
+      return 1
+    }
+    sidecar_present=1
+  fi
 
   cat >"$prompt_file" <<PROMPT
 You are running as background worker agent '$AGENT' in repository '$WORKDIR'.
 
-Follow this role guidance:
-PROMPT
-  cat "$role_file" >>"$prompt_file"
-
-  cat >>"$prompt_file" <<PROMPT
-
 Task file path: $task_file
 
-Task content:
+Task metadata:
+- id: ${task_id}
+- title: ${task_title:-unknown}
+- owner_agent: ${owner_agent:-unknown}
+- creator_agent: ${creator_agent:-unknown}
+- sidecar_prompt_root: ${sidecar_root}
 PROMPT
-  cat "$task_file" >>"$prompt_file"
+
+  local -a section_names=("Prompt" "Context" "Deliverables" "Validation")
+  local -a section_keys=("prompt" "context" "deliverables" "validation")
+  local idx section_name section_key section_content
+  for idx in "${!section_names[@]}"; do
+    section_name="${section_names[$idx]}"
+    section_key="${section_keys[$idx]}"
+    section_content=""
+
+    if [[ "$sidecar_present" -eq 1 ]]; then
+      if ! section_content="$(read_sidecar_section_fragments "$sidecar_root" "$section_key" "$section_name")"; then
+        return 1
+      fi
+    fi
+
+    if ! has_non_whitespace_content "$section_content"; then
+      section_content="$(extract_task_section "$task_file" "$section_name")"
+    fi
+
+    if ! has_non_whitespace_content "$section_content"; then
+      section_content="MISSING SECTION: $section_name"
+    fi
+
+    printf '\n## %s\n%s\n' "$section_name" "$section_content" >>"$prompt_file"
+  done
 
   cat >>"$prompt_file" <<'PROMPT'
 
@@ -431,18 +515,29 @@ run_task() {
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)"
   local log_file="$run_dir/${task_id}-${stamp}.log"
+  local in_progress_file
+  in_progress_file="$(in_progress_task_path "$task_id")"
 
   local prompt_file
   prompt_file="$(mktemp)"
-  run_taskctl ensure-agent "$AGENT" --task "$task_file" >/dev/null
-  build_prompt_file "$task_file" "$prompt_file" "${write_targets[@]}"
+  local build_error=""
+  if ! build_error="$(build_prompt_file "$task_file" "$prompt_file" "${write_targets[@]}" 2>&1)"; then
+    rm -f "$prompt_file"
+    build_error="$(sanitize_single_line "$build_error")"
+    local prompt_reason
+    prompt_reason="worker prompt assembly failed for $task_id; ${build_error:-unknown prompt assembly error}"
+    if [[ -f "$in_progress_file" ]]; then
+      run_taskctl block "$AGENT" "$task_id" "$prompt_reason" >/dev/null || true
+      log "blocked $task_id ($prompt_reason)"
+    else
+      log "$prompt_reason but task is no longer in progress"
+    fi
+    return
+  fi
 
   local reasoning_effort
   reasoning_effort="$(reasoning_effort_for_agent)"
   log "starting $task_id (reasoning_effort=$reasoning_effort, write_targets=${#write_targets[@]})"
-
-  local in_progress_file
-  in_progress_file="$(in_progress_task_path "$task_id")"
 
   local -a acquired_targets=()
   local lock_error=""
@@ -592,8 +687,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-run_taskctl ensure-agent "$AGENT" >/dev/null
 
 validate_reasoning_config
 validate_lock_config

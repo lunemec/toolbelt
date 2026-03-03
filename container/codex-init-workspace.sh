@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASELINE_ROOT="/opt/codex-baseline"
+BASELINE_ROOT="${BASELINE_ROOT:-/opt/codex-baseline}"
 WORKSPACE_ROOT="/workspace"
 FORCE=0
 QUIET=0
@@ -13,7 +13,7 @@ Usage:
 
 Options:
   --workspace DIR   Target workspace path (default: /workspace)
-  --force           Overwrite existing files from baseline
+  --force           Overwrite safe baseline-managed files from baseline
   --quiet           Suppress non-error output
 USAGE
 }
@@ -50,6 +50,27 @@ copy_tree_force() {
   mkdir -p "$dst"
   cp -a "$src/." "$dst/"
   log "refreshed $dst from baseline"
+}
+
+refresh_coordination_safe_force() {
+  local src_coord="$1"
+  local dst_coord="$2"
+  local rel
+
+  mkdir -p "$dst_coord"
+
+  for rel in prompts roles templates examples; do
+    if [[ -d "$src_coord/$rel" ]]; then
+      copy_tree_force "$src_coord/$rel" "$dst_coord/$rel"
+    fi
+  done
+
+  for rel in README.md COORDINATOR_INSTRUCTIONS.md; do
+    if [[ -f "$src_coord/$rel" ]]; then
+      cp -a "$src_coord/$rel" "$dst_coord/$rel"
+      log "refreshed $dst_coord/$rel from baseline"
+    fi
+  done
 }
 
 seed_workspace() {
@@ -110,7 +131,12 @@ main() {
   }
 
   seed_workspace "$baseline_scripts" "$WORKSPACE_ROOT/scripts"
-  seed_workspace "$baseline_coord" "$WORKSPACE_ROOT/coordination"
+
+  if [[ "$FORCE" -eq 1 ]]; then
+    refresh_coordination_safe_force "$baseline_coord" "$WORKSPACE_ROOT/coordination"
+  else
+    seed_workspace "$baseline_coord" "$WORKSPACE_ROOT/coordination"
+  fi
 }
 
 main "$@"

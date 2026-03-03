@@ -58,7 +58,9 @@ Image baseline bootstrap:
 - The toolbelt image now carries a canonical coordination baseline under `/opt/codex-baseline`.
 - On container start, `codex-entrypoint` prints a MOTD with quick-start commands (bootstrap is opt-in).
 - Existing project files are not overwritten unless `codex-init-workspace --force` is used.
-- You can also run bootstrap manually: `codex-init-workspace --workspace /workspace` (or `--force` to refresh).
+- `--force` refreshes only baseline-managed paths: `/workspace/scripts/**` and `/workspace/coordination/{README.md,COORDINATOR_INSTRUCTIONS.md,prompts/**,roles/**,templates/**,examples/**}`.
+- Dynamic runtime/task state is preserved even with `--force`: `/workspace/coordination/{inbox,in_progress,done,blocked,reports,runtime,task_prompts}/**`.
+- You can also run bootstrap manually: `codex-init-workspace --workspace /workspace` (or `--force` for safe baseline refresh).
 
 ```bash
 # create/scaffold an agent lane + role file
@@ -90,12 +92,33 @@ scripts/taskctl.sh list pm
 ```
 
 ### Write-Target Metadata
-- Coding-owner tasks (`fe`, `be`, `db`) must declare one or more `--write-target <path>` values on `create`/`delegate`.
+- Tasks owned by resolved coding-owner lanes must declare one or more `--write-target <path>` values on `create`/`delegate`.
+- Coding-owner auto-target lanes resolve with precedence: CLI `--coding-owner-lanes <agents>` > `TASK_CODING_OWNER_LANES` > default `fe,be,db` (comma or space separated values are accepted).
+- For resolved coding-owner lanes, `taskctl` automatically appends each task's own in-progress file path to `intended_write_targets` so workers can always write `## Result` evidence.
+- When `taskctl assign` reassigns a queued task to a resolved coding owner, it prunes any historical coding-owner self task-file targets and keeps exactly the new owner-lane self target.
 - Declared targets are written to task frontmatter as:
   - `intended_write_targets`
   - `lock_scope: file`
   - `lock_policy: block_on_conflict`
 - Non-coding tasks may leave `intended_write_targets` empty.
+
+### Task-Local Prompt Sidecars
+- `taskctl create` and `taskctl delegate` auto-bootstrap:
+  - `coordination/task_prompts/<TASK_ID>/prompt/000.md`
+  - `coordination/task_prompts/<TASK_ID>/context/000.md`
+  - `coordination/task_prompts/<TASK_ID>/deliverables/000.md`
+  - `coordination/task_prompts/<TASK_ID>/validation/000.md`
+- Worker runtime prompt assembly is strict task-local and deterministic:
+  1. `Prompt`
+  2. `Context`
+  3. `Deliverables`
+  4. `Validation`
+- Per-section precedence:
+  1. Sidecar `*.md` fragments in lexicographic filename order (non-hidden markdown only).
+  2. Embedded task markdown section with matching heading.
+  3. Sentinel line: `MISSING SECTION: <SectionName>`.
+- Runtime prompt assembly excludes `coordination/roles/*.md`; role files are not merged into worker execution prompts.
+- Legacy tasks with no sidecar still execute via embedded section fallback.
 
 ### Lock Commands
 Use lock commands for diagnostics, manual recovery, or explicit lock lifecycle control:
@@ -139,9 +162,8 @@ scripts/agents_ctl.sh stop
 
 Worker behavior:
 - Polls and claims from `inbox/<agent>/<priority>/`.
-- Executes with `coordination/roles/<agent>.md` + task prompt.
+- Assembles execution prompt from task-local canonical sections (`Prompt`, `Context`, `Deliverables`, `Validation`) with sidecar-first fallback behavior.
 - Applies reasoning policy by agent role: `pm`/`coordinator`/`architect` default to `xhigh`; other agents default to `none` reasoning effort (`default`/`null` aliases normalize to `none`).
-- Runs `ensure-agent --task` before execution to refresh role guidance when task context changes.
 - On success, moves task to `done`.
 - On failure, moves task to `blocked` and triggers blocker report to creator.
 - `status` auto-cleans stale PID files from dead workers.
