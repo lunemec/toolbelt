@@ -6,12 +6,15 @@ ARG RUST_TOOLCHAIN=stable
 ARG CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6
 ARG GHZ_VERSION=v0.121.0
 ARG GRPCURL_VERSION=v1.9.3
+ARG CLOUD_SDK_VERSION=516.0.0
+ARG KUBECTL_VERSION=v1.33.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash ca-certificates curl git docker.io python3 make g++ \
   less vim nano tree tmux fzf ripgrep fd-find jq yq zip xz-utils \
   cloc sloccount hyperfine entr httpie ncdu \
   wrk apache2-utils hey wget aria2 \
+  kubectx \
   procps iproute2 iputils-ping dnsutils netcat-openbsd lsof strace rsync openssh-client \
   build-essential pkg-config cmake ninja-build libssl-dev libffi-dev \
   python3-pip python3-venv pipx shellcheck shfmt \
@@ -78,6 +81,24 @@ RUN set -eux; \
 RUN GOBIN=/usr/local/bin go install github.com/bojand/ghz/cmd/ghz@${GHZ_VERSION} \
   && GOBIN=/usr/local/bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@${GRPCURL_VERSION}
 
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) gcloud_arch='x86_64'; kubectl_arch='amd64' ;; \
+    arm64) gcloud_arch='arm'; kubectl_arch='arm64' ;; \
+    *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${CLOUD_SDK_VERSION}-linux-${gcloud_arch}.tar.gz" -o /tmp/google-cloud-cli.tgz; \
+  tar -C /usr/local -xzf /tmp/google-cloud-cli.tgz; \
+  rm -f /tmp/google-cloud-cli.tgz; \
+  ln -sf /usr/local/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud; \
+  ln -sf /usr/local/google-cloud-sdk/bin/bq /usr/local/bin/bq; \
+  ln -sf /usr/local/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil; \
+  /usr/local/google-cloud-sdk/bin/gcloud components install gke-gcloud-auth-plugin --quiet; \
+  ln -sf /usr/local/google-cloud-sdk/bin/gke-gcloud-auth-plugin /usr/local/bin/gke-gcloud-auth-plugin; \
+  curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl" -o /usr/local/bin/kubectl; \
+  chmod 0755 /usr/local/bin/kubectl
+
 COPY scripts/*.sh /opt/codex-baseline/scripts/
 COPY coordination /opt/codex-baseline/coordination
 COPY container/codex-init-workspace.sh /usr/local/bin/codex-init-workspace
@@ -99,6 +120,7 @@ RUN set -eux; \
   claude --version; gemini --version; cursor --version; agent --version; cursor-agent --version; \
   wrk --version || true; ab -V; hey --help | head -n 2; \
   ghz --version; grpcurl --version; wget --version; aria2c --version; \
+  gcloud --version | head -n 1; command -v gke-gcloud-auth-plugin kubectl kubectx kubens; gke-gcloud-auth-plugin --version >/dev/null; kubectl version --client=true >/dev/null; \
   openclaw --version; \
   ralph --version
 

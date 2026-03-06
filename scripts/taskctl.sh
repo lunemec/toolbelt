@@ -6,12 +6,14 @@ TEMPLATE="$ROOT/templates/TASK_TEMPLATE.md"
 DEFAULT_OWNER_AGENT="${TASK_DEFAULT_OWNER:-pm}"
 DEFAULT_CREATOR_AGENT="${TASK_DEFAULT_CREATOR:-pm}"
 DEFAULT_PRIORITY="${TASK_DEFAULT_PRIORITY:-50}"
+DEFAULT_PHASE="${TASK_DEFAULT_PHASE:-plan}"
 LOCK_ROOT="$ROOT/locks/files"
 DEFAULT_LOCK_STALE_TTL_SECONDS="${TASK_LOCK_STALE_TTL_SECONDS:-3600}"
 LOCK_REAPER_AGENTS_RAW="${TASK_LOCK_REAPER_AGENTS:-pm coordinator}"
 DEFAULT_CODING_OWNER_LANES_RAW="fe,be,db"
 CODING_OWNER_LANES_ENV_RAW="${TASK_CODING_OWNER_LANES:-$DEFAULT_CODING_OWNER_LANES_RAW}"
 CODING_OWNER_LANES_OVERRIDE_RAW=""
+VALID_TASK_PHASES_RAW="clarify research plan execute review closeout"
 
 abs_path() {
   local path="$1"
@@ -52,10 +54,11 @@ now() {
 usage() {
   cat <<USAGE
 Usage:
-  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]... [--coding-owner-lanes <agents>]
-  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--write-target <path>]... [--coding-owner-lanes <agents>]
+  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>]
+  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>]
   $0 assign <TASK_ID> <agent> [--coding-owner-lanes <agents>]
   $0 claim <agent> [--coding-owner-lanes <agents>]
+  $0 verify-done <agent> <TASK_ID>
   $0 done <agent> <TASK_ID> [NOTE]
   $0 block <agent> <TASK_ID> <REASON>
   $0 lock-acquire <TASK_ID> <owner_agent> <target>
@@ -73,9 +76,11 @@ Notes:
   - Agents are dynamic skill names (examples: pm, designer, architect, fe, be, db, review).
   - Tasks owned by resolved coding-owner lanes must declare at least one --write-target path.
   - Coding-owner auto-target lanes default to "fe,be,db" (set TASK_CODING_OWNER_LANES; override once with --coding-owner-lanes).
+  - Supported task phases: clarify, research, plan, execute, review, closeout.
+  - done transitions run strict `verify-done` checks before moving tasks to done.
   - lock-clean-stale requires orchestrator actor identity via --actor or TASK_ACTOR_AGENT.
   - Default stale-lock reaper lanes are "pm coordinator" (override with TASK_LOCK_REAPER_AGENTS).
-  - ensure-agent creates role prompts when missing and refreshes when role prompt is unfit for the current task context.
+  - ensure-agent creates role prompts when missing; existing role prompts are stable unless --force is used.
 USAGE
 }
 
@@ -97,6 +102,37 @@ require_agent() {
     echo "invalid agent: $agent" >&2
     exit 1
   }
+}
+
+phase_in_valid_list() {
+  local phase="$1"
+  local item
+  for item in $VALID_TASK_PHASES_RAW; do
+    [[ "$phase" == "$item" ]] && return 0
+  done
+  return 1
+}
+
+normalize_phase_value() {
+  local phase="${1:-}"
+  phase="$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  case "$phase" in
+    ""|default)
+      phase="$DEFAULT_PHASE"
+      ;;
+    planning)
+      phase="plan"
+      ;;
+    execution)
+      phase="execute"
+      ;;
+  esac
+
+  phase_in_valid_list "$phase" || {
+    echo "invalid task phase: $phase (expected one of: $VALID_TASK_PHASES_RAW)" >&2
+    exit 1
+  }
+  printf '%s' "$phase"
 }
 
 normalize_priority() {
@@ -760,6 +796,38 @@ agent_requires_write_targets() {
   agent_in_space_list "$agent" "$coding_owner_lanes"
 }
 
+default_phase_for_owner() {
+  local owner_agent="$1"
+
+  if agent_requires_write_targets "$owner_agent"; then
+    printf 'execute'
+    return 0
+  fi
+
+  case "$owner_agent" in
+    review)
+      printf 'review'
+      ;;
+    researcher)
+      printf 'research'
+      ;;
+    planner|architect|pm|coordinator|designer)
+      printf 'plan'
+      ;;
+    *)
+      printf '%s' "$DEFAULT_PHASE"
+      ;;
+  esac
+}
+
+phase_requires_strict_done_evidence() {
+  local phase="$1"
+  case "$phase" in
+    execute|review|closeout) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 owner_auto_includes_taskfile_target() {
   local agent="$1"
   agent_requires_write_targets "$agent"
@@ -981,6 +1049,8 @@ infer_skill_tags() {
 
   case "$agent" in
     pm|product|coordinator) tags="$(append_unique_word "$tags" "product")" ;;
+    researcher|research) tags="$(append_unique_word "$tags" "product")" ;;
+    planner) tags="$(append_unique_word "$tags" "architecture")" ;;
     designer|design|ux|ui) tags="$(append_unique_word "$tags" "design")" ;;
     architect|architecture) tags="$(append_unique_word "$tags" "architecture")" ;;
     fe|frontend|front-end) tags="$(append_unique_word "$tags" "frontend")" ;;
@@ -1328,21 +1398,19 @@ ensure_agent_scaffold() {
   fi
 
   local tags
-  tags="$(infer_skill_tags "$agent" "$task_file" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  tags="$(infer_skill_tags "$agent" "" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
   [[ -n "$tags" ]] || tags="general"
 
   local tags_csv
   tags_csv="${tags// /,}"
 
   local fit_signature
-  fit_signature="$(compute_fit_signature "$agent" "$task_file" "$tags_csv")"
+  fit_signature="$(compute_fit_signature "$agent" "" "$tags_csv")"
 
   local needs_refresh=0
   if [[ ! -f "$role_file" ]]; then
     needs_refresh=1
   elif [[ "$force_refresh" -eq 1 ]]; then
-    needs_refresh=1
-  elif role_unfit_for_task "$role_file" "$fit_signature" "$tags"; then
     needs_refresh=1
   fi
 
@@ -1353,7 +1421,7 @@ ensure_agent_scaffold() {
       cp "$role_file" "$backup_dir/$(basename "$role_file").$(date +%Y%m%d%H%M%S).bak"
     fi
 
-    generate_role_prompt "$agent" "$role_file" "$task_file" "$tags" "$tags_csv" "$fit_signature"
+    generate_role_prompt "$agent" "$role_file" "" "$tags" "$tags_csv" "$fit_signature"
   fi
 }
 
@@ -1376,6 +1444,157 @@ ensure_task_prompt_sidecar() {
   done
 }
 
+extract_task_section() {
+  local task_file="$1"
+  local section_name="$2"
+
+  awk -v section_name="$section_name" '
+    BEGIN { in_section = 0 }
+    $0 == "## " section_name { in_section = 1; next }
+    in_section && /^## [^#]/ { exit }
+    in_section { print }
+  ' "$task_file"
+}
+
+task_yaml_array_values() {
+  local task_file="$1"
+  local field="$2"
+  require_command yq
+
+  local frontmatter_file
+  frontmatter_file="$(mktemp)"
+  extract_frontmatter_to_file "$task_file" "$frontmatter_file"
+
+  if [[ ! -s "$frontmatter_file" ]]; then
+    rm -f "$frontmatter_file"
+    echo "unable to extract task frontmatter: $task_file" >&2
+    return 1
+  fi
+
+  if ! yq -e ".${field} | type == \"array\"" "$frontmatter_file" >/dev/null 2>&1; then
+    rm -f "$frontmatter_file"
+    echo "task missing ${field} array: $task_file" >&2
+    return 1
+  fi
+
+  yq -r ".${field}[]? // empty" "$frontmatter_file"
+  rm -f "$frontmatter_file"
+}
+
+task_phase_value() {
+  local task_file="$1"
+  require_command yq
+
+  local frontmatter_file
+  frontmatter_file="$(mktemp)"
+  extract_frontmatter_to_file "$task_file" "$frontmatter_file"
+
+  if [[ ! -s "$frontmatter_file" ]]; then
+    rm -f "$frontmatter_file"
+    echo "unable to extract task frontmatter: $task_file" >&2
+    return 1
+  fi
+
+  local phase
+  phase="$(yq -r '.phase // ""' "$frontmatter_file")"
+  rm -f "$frontmatter_file"
+  normalize_phase_value "$phase"
+}
+
+path_exists_in_workspace() {
+  local artifact="$1"
+  local canonical
+  canonical="$(canonicalize_target_path "$artifact")"
+  [[ -e "/workspace/$canonical" ]]
+}
+
+result_section_has_placeholder_text() {
+  local result_body="$1"
+  printf '%s' "$result_body" | rg -qi '(agent fills this before|^pending$|^todo$|^tbd$|placeholder|not implemented)'
+}
+
+verify_task_done_in_progress() {
+  local agent="$1"
+  local task_id="$2"
+  local completion_note="${3:-}"
+
+  local task_file="$ROOT/in_progress/$agent/${task_id}.md"
+  [[ -f "$task_file" ]] || {
+    echo "task not in progress for verification: $task_file" >&2
+    return 1
+  }
+
+  local phase
+  phase="$(task_phase_value "$task_file")" || return 1
+
+  local result_body
+  result_body="$(extract_task_section "$task_file" "Result")"
+
+  local has_meaningful_result=0
+  if printf '%s' "$result_body" | grep -q '[^[:space:]]'; then
+    if ! result_section_has_placeholder_text "$result_body"; then
+      has_meaningful_result=1
+    fi
+  fi
+
+  if phase_requires_strict_done_evidence "$phase"; then
+    (( has_meaningful_result == 1 )) || {
+      echo "verify-done failed: phase=$phase requires non-placeholder ## Result evidence" >&2
+      return 1
+    }
+  elif (( has_meaningful_result == 0 )); then
+    if [[ -z "$completion_note" ]]; then
+      echo "verify-done failed: phase=$phase requires either non-placeholder ## Result or completion note" >&2
+      return 1
+    fi
+  fi
+
+  local -a evidence_commands=()
+  local -a evidence_artifacts=()
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    evidence_commands+=("$item")
+  done < <(task_yaml_array_values "$task_file" "evidence_commands")
+
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    evidence_artifacts+=("$item")
+  done < <(task_yaml_array_values "$task_file" "evidence_artifacts")
+
+  local cmd
+  for cmd in "${evidence_commands[@]}"; do
+    if ! printf '%s' "$result_body" | grep -Fq -- "$cmd"; then
+      echo "verify-done failed: command evidence missing from ## Result: $cmd" >&2
+      return 1
+    fi
+  done
+
+  local artifact
+  for artifact in "${evidence_artifacts[@]}"; do
+    if ! path_exists_in_workspace "$artifact"; then
+      echo "verify-done failed: expected evidence artifact does not exist: $artifact" >&2
+      return 1
+    fi
+  done
+
+  if phase_requires_strict_done_evidence "$phase"; then
+    if ! printf '%s' "$result_body" | grep -qi 'Acceptance Criteria:'; then
+      echo "verify-done failed: strict phase requires \"Acceptance Criteria:\" section in ## Result" >&2
+      return 1
+    fi
+    if ! printf '%s' "$result_body" | grep -qi 'Command:'; then
+      echo "verify-done failed: strict phase requires at least one \"Command:\" line in ## Result" >&2
+      return 1
+    fi
+    if ! printf '%s' "$result_body" | grep -qi 'Exit:'; then
+      echo "verify-done failed: strict phase requires at least one \"Exit:\" line in ## Result" >&2
+      return 1
+    fi
+  fi
+
+  echo "verify-done passed: task_id=$task_id phase=$phase"
+}
+
 create_task() {
   local task_id="$1"
   local title="$2"
@@ -1383,7 +1602,8 @@ create_task() {
   local creator="$4"
   local priority="$5"
   local parent_task_id="${6:-}"
-  shift 6
+  local phase="${7:-}"
+  shift 7
   local -a requested_targets=("$@")
   local -a explicit_write_targets=()
   local -a write_targets=()
@@ -1392,6 +1612,10 @@ create_task() {
   require_agent "$owner"
   require_agent "$creator"
   priority="$(normalize_priority "$priority")"
+  if [[ -z "$phase" ]]; then
+    phase="$(default_phase_for_owner "$owner")"
+  fi
+  phase="$(normalize_phase_value "$phase")"
 
   if (( ${#requested_targets[@]} > 0 )); then
     while IFS= read -r target; do
@@ -1431,11 +1655,15 @@ create_task() {
 
   cp "$TEMPLATE" "$out"
   set_field "$out" "id" "$task_id"
-  set_field "$out" "title" "$title"
+  set_field "$out" "title" "$(yaml_quote_single "$title")"
   set_field "$out" "owner_agent" "$owner"
   set_field "$out" "creator_agent" "$creator"
   set_field "$out" "status" "inbox"
   set_field "$out" "priority" "$priority"
+  set_field "$out" "phase" "$phase"
+  grep -qE '^requirement_ids:' "$out" || set_field "$out" "requirement_ids" "[]"
+  grep -qE '^evidence_commands:' "$out" || set_field "$out" "evidence_commands" "[]"
+  grep -qE '^evidence_artifacts:' "$out" || set_field "$out" "evidence_artifacts" "[]"
   set_field "$out" "created_at" "$(now)"
   set_field "$out" "updated_at" "$(now)"
 
@@ -1555,7 +1783,7 @@ create_blocker_report() {
   local report_id="BLK-${blocked_task_id}-$(date +%Y%m%d%H%M%S%N)"
   local report_title="Blocker from ${blocker_agent}: ${blocked_task_id}"
 
-  create_task "$report_id" "$report_title" "$creator" "system" 0 "$blocked_task_id"
+  create_task "$report_id" "$report_title" "$creator" "system" 0 "$blocked_task_id" "clarify"
 
   local report_file
   report_file="$(find "$ROOT/inbox/$creator" -type f -name "${report_id}.md" | head -n1)"
@@ -1586,6 +1814,10 @@ transition_task() {
 
   local src="$ROOT/in_progress/$agent/${task_id}.md"
   [[ -f "$src" ]] || { echo "task not in progress for $agent: $src" >&2; exit 1; }
+
+  if [[ "$action" == "done" ]]; then
+    verify_task_done_in_progress "$agent" "$task_id" "$note" || exit 1
+  fi
 
   local priority
   priority="$(field_value "$src" "priority")"
@@ -1648,6 +1880,7 @@ main() {
       local creator="$DEFAULT_CREATOR_AGENT"
       local priority="$DEFAULT_PRIORITY"
       local parent=""
+      local phase=""
       local -a write_targets=()
       shift 3
 
@@ -1669,6 +1902,10 @@ main() {
             parent="$2"
             shift 2
             ;;
+          --phase)
+            phase="$2"
+            shift 2
+            ;;
           --write-target)
             write_targets+=("$2")
             shift 2
@@ -1685,7 +1922,7 @@ main() {
         esac
       done
 
-      create_task "$task_id" "$title" "$owner" "$creator" "$priority" "$parent" "${write_targets[@]}"
+      create_task "$task_id" "$title" "$owner" "$creator" "$priority" "$parent" "$phase" "${write_targets[@]}"
       ;;
     delegate)
       [[ $# -ge 5 ]] || { usage; exit 1; }
@@ -1695,6 +1932,7 @@ main() {
       local title="$5"
       local priority="$DEFAULT_PRIORITY"
       local parent=""
+      local phase=""
       local -a write_targets=()
       shift 5
 
@@ -1708,6 +1946,10 @@ main() {
             parent="$2"
             shift 2
             ;;
+          --phase)
+            phase="$2"
+            shift 2
+            ;;
           --write-target)
             write_targets+=("$2")
             shift 2
@@ -1724,7 +1966,7 @@ main() {
         esac
       done
 
-      create_task "$task_id" "$title" "$to_agent" "$from_agent" "$priority" "$parent" "${write_targets[@]}"
+      create_task "$task_id" "$title" "$to_agent" "$from_agent" "$priority" "$parent" "$phase" "${write_targets[@]}"
       ;;
     assign)
       [[ $# -ge 3 ]] || { usage; exit 1; }
@@ -1773,6 +2015,10 @@ main() {
       [[ $# -ge 3 ]] || { usage; exit 1; }
       local note="${4:-}"
       transition_task done "$2" "$3" "$note"
+      ;;
+    verify-done)
+      [[ $# -ge 3 ]] || { usage; exit 1; }
+      verify_task_done_in_progress "$2" "$3"
       ;;
     block)
       [[ $# -ge 4 ]] || { usage; exit 1; }

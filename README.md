@@ -18,6 +18,7 @@ Installed toolchains and CLIs include:
 - Go (official tarball install)
 - Rust (`rustup`, `cargo`, `rustc`)
 - Dev/system tools: `git`, `docker`, `fzf`, `rg`, `fd`, `jq`, `yq`, `cloc`, `sloccount`, `hyperfine`, `wrk`, `ab`, `hey`, `ghz`, `grpcurl`, `httpie`, `wget`, `aria2`, `entr`, `ncdu`, `tmux`, `shellcheck`, `shfmt`, and more
+- Cloud/Kubernetes CLIs: `gcloud`, `gke-gcloud-auth-plugin`, `kubectl`, `kubectx`, `kubens`
 - AI CLIs: `codex`, `claude`, `gemini`, and Cursor Agent as `cursor` (`agent`/`cursor-agent` aliases)
 - Workspace CLIs: `ralph`, `openclaw`, and `@googleworkspace/cli`
 - `codex` wrapper and `codex-real`
@@ -107,6 +108,7 @@ If single-file mounts are unreliable in your Docker runtime, mount a temporary d
 ```bash
 command -v node npm pnpm python3 pip3 uv poetry go rustc cargo \
   fzf rg fd jq yq cloc sloccount hyperfine wrk ab hey ghz grpcurl http wget aria2c entr ncdu \
+  gcloud gke-gcloud-auth-plugin kubectl kubectx kubens \
   codex codex-real claude gemini cursor agent cursor-agent openclaw
 ```
 
@@ -122,7 +124,10 @@ scripts/toolbelt.sh
 scripts/toolbelt.sh ./directory1 ./directory2
 
 # Add host Docker access only when needed
-scripts/toolbelt.sh --docker ../directory1 ../directory2
+scripts/toolbelt.sh -docker ../directory1 ../directory2
+
+# Add hardened gcloud + kube credential mounts when needed
+scripts/toolbelt.sh -gcloud -k8s ./directory1 ./directory2
 
 # Run a command instead of an interactive shell
 scripts/toolbelt.sh ./directory1 ./directory2 -- bash -lc 'ls -la /workspace'
@@ -131,17 +136,24 @@ scripts/toolbelt.sh ./directory1 ./directory2 -- bash -lc 'ls -la /workspace'
 Behavior summary:
 - If no positional paths are provided, the current directory is mounted at `/workspace`.
 - Each positional path becomes one mount at `/workspace/<basename(path)>`.
-- Docker socket is opt-in via `--docker`.
+- Docker socket is opt-in via `-docker` / `--docker`.
 - `/root/.codex` is mounted as tmpfs (`512m` default).
 - `~/.codex/auth.json` and `~/.codex/config.toml` are mounted read-only automatically when present.
+- `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud` inside container runtime state.
+- `-k8s` / `--k8s` mounts host `~/.kube/config` read-only to `/run/secrets/kube-config`; entrypoint hydrates `/root/.kube/config`.
 - Path basenames must be unique per run (to avoid destination collisions).
+- Missing requested credential sources fail fast with a clear error.
+- Override credential source paths with `CODEX_GCLOUD_CONFIG_SRC` and `CODEX_KUBECONFIG_SRC`.
 
 Useful options:
-- `--image IMAGE`
-- `--workdir DIR`
-- `--shell SHELL`
-- `--tmpfs-size SIZE`
-- `--keep`
+- `-docker` / `--docker`
+- `-gcloud` / `--gcloud`
+- `-k8s` / `--k8s`
+- `-image` / `--image IMAGE`
+- `-workdir` / `--workdir DIR` (`-w DIR` also supported)
+- `-shell` / `--shell SHELL`
+- `-tmpfs-size` / `--tmpfs-size SIZE`
+- `-keep` / `--keep`
 
 Optional shell aliases:
 
@@ -299,13 +311,19 @@ docker build -f Dockerfile.codex-dev -t codex-dev:toolbelt .
 2. Check tool presence:
 
 ```bash
-docker run --rm codex-dev:toolbelt bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq openclaw codex codex-real'
+docker run --rm codex-dev:toolbelt bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq codex codex-real'
 ```
 
 3. Runtime smoke checks:
 
 ```bash
 docker run --rm codex-dev:toolbelt bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'
+```
+
+4. GKE auth plugin presence:
+
+```bash
+docker run --rm codex-dev:toolbelt bash -lc 'command -v gke-gcloud-auth-plugin && gke-gcloud-auth-plugin --version'
 ```
 
 ## Repository Layout

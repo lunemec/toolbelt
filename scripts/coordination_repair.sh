@@ -6,7 +6,7 @@ QUIET=0
 SKIP_BASELINE=0
 FORCE_ROLES=0
 
-CORE_AGENTS=(pm coordinator designer architect fe be db review)
+CORE_AGENTS=(pm coordinator researcher planner designer architect fe be db review)
 
 usage() {
   cat <<USAGE

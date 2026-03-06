@@ -10,6 +10,8 @@ IMAGE="$DEFAULT_IMAGE"
 WORKDIR="$DEFAULT_WORKDIR"
 SHELL_CMD="$DEFAULT_SHELL"
 WITH_DOCKER_SOCK=0
+WITH_GCLOUD=0
+WITH_K8S=0
 AUTO_REMOVE=1
 TMPFS_SIZE="$DEFAULT_TMPFS_SIZE"
 MOUNTS=()
@@ -17,6 +19,8 @@ MOUNT_PWD_TO_WORKSPACE=0
 CMD=()
 AUTH_SRC="${CODEX_AUTH_JSON_SRC:-$HOME/.codex/auth.json}"
 CONFIG_SRC="${CODEX_CONFIG_TOML_SRC:-$HOME/.codex/config.toml}"
+GCLOUD_SRC="${CODEX_GCLOUD_CONFIG_SRC:-$HOME/.config/gcloud}"
+KUBECONFIG_SRC="${CODEX_KUBECONFIG_SRC:-$HOME/.kube/config}"
 
 usage() {
   cat <<'USAGE'
@@ -29,13 +33,19 @@ Description:
   Each provided directory/path is mounted to /workspace/<basename(path)>.
 
 Options:
-  --docker            Mount /var/run/docker.sock
-  --image IMAGE       Container image (default: codex-dev:toolbelt)
-  --workdir DIR       Container working directory (default: /workspace)
-  --shell SHELL       Default interactive shell when no CMD is provided (default: bash)
-  --tmpfs-size SIZE   /root/.codex tmpfs size (default: 512m)
-  --keep              Keep container after exit (omit --rm)
-  -h, --help          Show this help
+  -docker, --docker   Mount /var/run/docker.sock
+  -gcloud, --gcloud   Mount host gcloud config into /run/secrets/gcloud-config (read-only)
+  -k8s, --k8s         Mount host kubeconfig into /run/secrets/kube-config (read-only)
+  -image, --image IMAGE
+                     Container image (default: codex-dev:toolbelt)
+  -workdir, --workdir, -w DIR
+                     Container working directory (default: /workspace)
+  -shell, --shell SHELL
+                     Default interactive shell when no CMD is provided (default: bash)
+  -tmpfs-size, --tmpfs-size SIZE
+                     /root/.codex tmpfs size (default: 512m)
+  -keep, --keep       Keep container after exit (omit --rm)
+  -h, -help, --help   Show this help
 
 Environment overrides:
   CODEX_DEV_IMAGE
@@ -43,10 +53,12 @@ Environment overrides:
   CODEX_TOOLBELT_TMPFS_SIZE
   CODEX_AUTH_JSON_SRC
   CODEX_CONFIG_TOML_SRC
+  CODEX_GCLOUD_CONFIG_SRC
+  CODEX_KUBECONFIG_SRC
 
 Examples:
   toolbelt
-  toolbelt --docker ./directory1 ./directory2
+  toolbelt -docker -gcloud -k8s ./directory1 ./directory2
   toolbelt ./directory1 ./directory2 -- bash -lc 'ls -la /workspace'
 USAGE
 }
@@ -87,27 +99,35 @@ require_docker() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --docker)
+      -docker|--docker)
         WITH_DOCKER_SOCK=1
         shift
         ;;
-      --image)
+      -gcloud|--gcloud)
+        WITH_GCLOUD=1
+        shift
+        ;;
+      -k8s|--k8s)
+        WITH_K8S=1
+        shift
+        ;;
+      -image|--image)
         IMAGE="$2"
         shift 2
         ;;
-      --workdir|-w)
+      -workdir|--workdir|-w)
         WORKDIR="$2"
         shift 2
         ;;
-      --shell)
+      -shell|--shell)
         SHELL_CMD="$2"
         shift 2
         ;;
-      --tmpfs-size)
+      -tmpfs-size|--tmpfs-size)
         TMPFS_SIZE="$2"
         shift 2
         ;;
-      --keep)
+      -keep|--keep)
         AUTO_REMOVE=0
         shift
         ;;
@@ -116,7 +136,7 @@ parse_args() {
         CMD=("$@")
         break
         ;;
-      -h|--help)
+      -h|-help|--help)
         usage
         exit 0
         ;;
@@ -135,6 +155,7 @@ parse_args() {
 
 build_mount_args() {
   local source abs_source dest_name dest_path
+  local gcloud_abs_source kubeconfig_abs_source
   local idx=0
   local -A seen_dest=()
   local -a args=()
@@ -178,10 +199,28 @@ build_mount_args() {
 
   if [[ "$WITH_DOCKER_SOCK" -eq 1 ]]; then
     if [[ ! -S /var/run/docker.sock ]]; then
-      echo "requested --docker but /var/run/docker.sock is not available" >&2
+      echo "requested -docker/--docker but /var/run/docker.sock is not available" >&2
       exit 1
     fi
     args+=( -v /var/run/docker.sock:/var/run/docker.sock )
+  fi
+
+  if [[ "$WITH_GCLOUD" -eq 1 ]]; then
+    gcloud_abs_source="$(abs_path "$GCLOUD_SRC")"
+    if [[ ! -d "$gcloud_abs_source" ]]; then
+      echo "requested -gcloud/--gcloud but gcloud config directory is not available: $GCLOUD_SRC" >&2
+      exit 1
+    fi
+    args+=( -v "${gcloud_abs_source}:/run/secrets/gcloud-config:ro" )
+  fi
+
+  if [[ "$WITH_K8S" -eq 1 ]]; then
+    kubeconfig_abs_source="$(abs_path "$KUBECONFIG_SRC")"
+    if [[ ! -f "$kubeconfig_abs_source" ]]; then
+      echo "requested -k8s/--k8s but kubeconfig file is not available: $KUBECONFIG_SRC" >&2
+      exit 1
+    fi
+    args+=( -v "${kubeconfig_abs_source}:/run/secrets/kube-config:ro" )
   fi
 
   printf '%s\n' "${args[@]}"
@@ -190,11 +229,15 @@ build_mount_args() {
 run_container() {
   local -a run_args=()
   local -a mount_args=()
+  local mount_output
   local line
 
+  mount_output="$(build_mount_args)"
+
   while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
     mount_args+=("$line")
-  done < <(build_mount_args)
+  done <<<"$mount_output"
 
   run_args+=(
     run

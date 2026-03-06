@@ -39,6 +39,46 @@ require_contains() {
   fi
 }
 
+inject_result_evidence() {
+  local task_file="$1"
+  local tmp
+  tmp="$(mktemp)"
+
+  awk '
+    BEGIN { in_result = 0; emitted = 0 }
+    /^## Result$/ {
+      print
+      print "Acceptance Criteria:"
+      print "- PASS: lock contract setup"
+      print "Command: lock-contract-smoke"
+      print "Exit: 0"
+      print "Observed: setup seeded"
+      in_result = 1
+      emitted = 1
+      next
+    }
+    in_result && /^## [^#]/ {
+      in_result = 0
+      print
+      next
+    }
+    in_result { next }
+    { print }
+    END {
+      if (emitted == 0) {
+        print "## Result"
+        print "Acceptance Criteria:"
+        print "- PASS: lock contract setup"
+        print "Command: lock-contract-smoke"
+        print "Exit: 0"
+        print "Observed: setup seeded"
+      }
+    }
+  ' "$task_file" >"$tmp"
+
+  mv "$tmp" "$task_file"
+}
+
 wait_for_locked_status() {
   local target="$1"
   local attempts="${2:-120}"
@@ -86,6 +126,13 @@ task_fail_id="worker-lock-fail-$(date +%s)-$$"
 
 run_taskctl create "$task_one_id" "Worker lock holder task" --to fe --from pm --priority 10 --write-target src/shared-target.txt >/dev/null
 run_taskctl create "$task_two_id" "Worker lock conflict task" --to be --from pm --priority 10 --write-target src/shared-target.txt >/dev/null
+
+task_one_file="$smoke_root/inbox/fe/010/${task_one_id}.md"
+if [[ ! -f "$task_one_file" ]]; then
+  echo "expected seeded task file missing: $task_one_file" >&2
+  exit 1
+fi
+inject_result_evidence "$task_one_file"
 
 AGENT_ROOT_DIR="$smoke_root" \
 AGENT_TASKCTL="$TASKCTL" \

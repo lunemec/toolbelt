@@ -7,6 +7,10 @@ parent_task_id: none
 status: inbox
 priority: 50
 depends_on: []
+phase: plan
+requirement_ids: []
+evidence_commands: []
+evidence_artifacts: []
 intended_write_targets: []
 lock_scope: file
 lock_policy: block_on_conflict
@@ -32,3 +36,6 @@ List exact commands/tests that must pass.
 
 ## Result
 Agent fills this before moving the task to `done` or `blocked`.
+For `phase: execute|review|closeout`, include:
+- `Acceptance Criteria:` with pass/fail status per criterion.
+- One or more `Command:` + `Exit:` evidence entries.

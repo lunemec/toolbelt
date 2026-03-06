@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 ### Added
 - Global npm install for `@googleworkspace/cli` in the development image.
 - Global npm install for `openclaw` in the development image.
+- Google Cloud CLI (`gcloud`) and Kubernetes CLIs (`kubectl`, `kubectx`, `kubens`) in the development image.
+- Google GKE auth helper (`gke-gcloud-auth-plugin`) in the development image for `kubectl` authentication against GKE.
 - Additional AI provider CLIs in the development image: `@anthropic-ai/claude-code` (`claude`), `@google/gemini-cli` (`gemini`), and Cursor Agent (`cursor`/`agent`/`cursor-agent`).
 - Additional terminal tooling in the development image: `fzf`, `cloc`, `sloccount`, `hyperfine`, `entr`, `httpie`, and `ncdu`.
 - Additional performance/request tooling in the development image: `wrk`, `ab` (`apache2-utils`), `hey`, `ghz`, `grpcurl`, `wget`, and `aria2`.
@@ -40,6 +42,8 @@ All notable changes to this project are documented in this file.
 - `README.md` and `AGENTS.md` now document the planner/orchestrator reasoning policy and corresponding worker environment overrides.
 - `README.md` now documents selective mount workflows with `scripts/toolbelt.sh`, including examples and zsh/bash alias usage.
 - `scripts/toolbelt.sh` now mounts the current working directory to `/workspace` when no positional mount paths are provided.
+- `scripts/toolbelt.sh` now exposes unified short-word and long flag aliases across options (`-docker`/`--docker`, `-image`/`--image`, `-workdir`/`--workdir`, `-shell`/`--shell`, `-tmpfs-size`/`--tmpfs-size`, `-keep`/`--keep`), while keeping compatibility aliases such as `-w`.
+- `scripts/toolbelt.sh` gcloud/k8s mount validation errors now reference both accepted aliases (`-gcloud`/`--gcloud`, `-k8s`/`--k8s`) for clearer guidance.
 - Startup MOTD now presents grouped/colorized sections with most-used commands first (`codex`, `ralph`, `openclaw`, `claude`, `gemini`, `cursor` with `agent`/`cursor-agent` aliases, `codex-init-workspace`), plus a dynamic absolute-path listing of all image-baked scripts under `/opt/codex-baseline/scripts/`.
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now enforces a PM-style plan loop (deep clarification, specialist delegation cycles, aggregation, blocker-first handling, and explicit next-step checkpoints).
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now requires TDD red-green-blue workflow evidence for software specialist tasks unless explicitly waived by the user.
@@ -52,6 +56,7 @@ All notable changes to this project are documented in this file.
 - `Dockerfile.codex-dev` now bakes all `scripts/*.sh` into `/opt/codex-baseline/scripts`, and startup MOTD now lists all image-baked script paths so they are discoverable even before `/workspace/scripts` is seeded.
 - `/usr/local/bin/codex-entrypoint` no longer auto-bootstraps `/workspace`; coordination/scripts seeding now happens only when `codex-init-workspace` is run explicitly.
 - `/usr/local/bin/codex-entrypoint` now bootstraps `/root/.codex` from minimal mounted secret paths (`/run/secrets/codex-auth.json`, `/run/secrets/codex-config.toml`) with optional API-key fallback, enabling ephemeral Codex home usage without mounting host `~/.codex`.
+- `/usr/local/bin/codex-entrypoint` now also bootstraps gcloud and kube runtime state from mounted secret sources (`/run/secrets/gcloud-config`, `/run/secrets/kube-config`) into `/root/.config/gcloud` and `/root/.kube/config`.
 - `scripts/agents_ctl.sh status` now cleans stale/invalid pid files automatically and validates pid ownership against the expected worker+agent command.
 - `coordination/templates/TASK_TEMPLATE.md` now includes `intended_write_targets`, `lock_scope`, and `lock_policy` lock metadata defaults for write-conflict-safe task orchestration.
 - `scripts/taskctl.sh` now includes lock lifecycle helpers (`lock-acquire`, `lock-heartbeat`, `lock-release`, `lock-release-task`), lock diagnostics (`lock-status`), stale lock cleanup (`lock-clean-stale --ttl [--actor <agent>]`) gated to orchestrator lanes, per-reap audit reports under `coordination/reports/<actor>/`, and coding-task validation that enforces non-empty `intended_write_targets` for FE/BE/DB owners.

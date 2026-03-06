@@ -4,6 +4,8 @@ set -euo pipefail
 CODEX_HOME="${CODEX_HOME:-/root/.codex}"
 AUTH_SRC="${CODEX_AUTH_JSON_SRC:-/run/secrets/codex-auth.json}"
 CONFIG_SRC="${CODEX_CONFIG_TOML_SRC:-/run/secrets/codex-config.toml}"
+GCLOUD_CONFIG_SRC="${GCLOUD_CONFIG_SRC:-/run/secrets/gcloud-config}"
+KUBECONFIG_SRC="${KUBECONFIG_SRC:-/run/secrets/kube-config}"
 
 copy_secret() {
   local src_path="$1"
@@ -23,6 +25,23 @@ copy_secret() {
   return 1
 }
 
+copy_secret_tree() {
+  local src_path="$1"
+  local dst_path="$2"
+
+  if [[ ! -d "${src_path}" ]]; then
+    return 1
+  fi
+
+  mkdir -p "${dst_path}"
+  chmod 700 "${dst_path}" 2>/dev/null || true
+
+  cp -a "${src_path}/." "${dst_path}/"
+
+  find "${dst_path}" -type d -exec chmod 700 {} + 2>/dev/null || true
+  find "${dst_path}" -type f -exec chmod 600 {} + 2>/dev/null || true
+}
+
 bootstrap_codex_home() {
   mkdir -p "${CODEX_HOME}"
   chmod 700 "${CODEX_HOME}" 2>/dev/null || true
@@ -37,6 +56,18 @@ bootstrap_codex_home() {
 
   # Keep the raw key out of the interactive shell environment after bootstrap.
   unset OPENAI_API_KEY || true
+}
+
+bootstrap_cloud_and_k8s_home() {
+  local gcloud_home="${CLOUDSDK_CONFIG:-/root/.config/gcloud}"
+  local kube_home="/root/.kube"
+
+  mkdir -p "$(dirname "${gcloud_home}")"
+  copy_secret_tree "${GCLOUD_CONFIG_SRC}" "${gcloud_home}" || true
+
+  mkdir -p "${kube_home}"
+  chmod 700 "${kube_home}" 2>/dev/null || true
+  copy_secret "${KUBECONFIG_SRC}" "config" "${kube_home}/config" || true
 }
 
 describe_script() {
@@ -161,6 +192,7 @@ show_motd() {
 }
 
 bootstrap_codex_home
+bootstrap_cloud_and_k8s_home
 show_motd "$@"
 
 exec "$@"

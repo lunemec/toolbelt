@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT="${AGENT_ROOT_DIR:-coordination}"
 TASKCTL="${AGENT_TASKCTL:-scripts/taskctl.sh}"
 DEFAULT_INTERVAL=30
-REASONING_XHIGH_AGENTS="${AGENT_XHIGH_AGENTS:-pm coordinator architect}"
+REASONING_XHIGH_AGENTS="${AGENT_XHIGH_AGENTS:-pm coordinator planner researcher architect be review}"
 REASONING_XHIGH_EFFORT="${AGENT_PLANNER_REASONING_EFFORT:-xhigh}"
-REASONING_DEFAULT_EFFORT="${AGENT_DEFAULT_REASONING_EFFORT:-none}"
+REASONING_DEFAULT_EFFORT="${AGENT_DEFAULT_REASONING_EFFORT:-medium}"
 LOCK_HEARTBEAT_INTERVAL="${AGENT_LOCK_HEARTBEAT_INTERVAL:-30}"
 
 abs_path() {
@@ -56,11 +56,11 @@ Usage:
 Environment overrides:
   AGENT_ROOT_DIR          default: coordination
   AGENT_POLL_INTERVAL     default: 30
-  AGENT_XHIGH_AGENTS      default: "pm coordinator architect"
+  AGENT_XHIGH_AGENTS      default: "pm coordinator planner researcher architect be review"
   AGENT_PLANNER_REASONING_EFFORT
                           default: xhigh (supports: default|null|none|minimal|low|medium|high|xhigh; null aliases to none)
   AGENT_DEFAULT_REASONING_EFFORT
-                          default: none (aliases: default|null)
+                          default: medium (aliases: default|null->none)
   AGENT_LOCK_HEARTBEAT_INTERVAL
                           default: 30 seconds
   AGENT_EXEC_CMD          optional custom command; bypasses built-in reasoning policy
@@ -374,7 +374,11 @@ Execution requirements:
 - Implement the task in the current repository.
 - Keep changes scoped to the task.
 - Run relevant checks/tests for touched areas.
-- Update the task file's "## Result" section with concise outcomes and verification commands.
+- Update the task file's "## Result" section with explicit evidence:
+  - `Acceptance Criteria:` with pass/fail status for scoped criteria
+  - one or more `Command:` lines
+  - corresponding `Exit:` lines
+  - concise observed output summary
 - If blocked by dependency or ambiguity, clearly state blocker in the task file and exit non-zero.
 PROMPT
 
@@ -590,7 +594,19 @@ run_task() {
 
   if [[ $rc -eq 0 ]]; then
     if [[ -f "$in_progress_file" ]]; then
-      if run_taskctl done "$AGENT" "$task_id" "Completed by worker; log: $log_file" >/dev/null; then
+      local verify_output verify_rc
+      if verify_output="$(run_taskctl verify-done "$AGENT" "$task_id" 2>&1)"; then
+        verify_rc=0
+      else
+        verify_rc=$?
+      fi
+
+      if [[ $verify_rc -ne 0 ]]; then
+        local verify_reason
+        verify_reason="done verification failed: $(sanitize_single_line "$verify_output")"
+        run_taskctl block "$AGENT" "$task_id" "$verify_reason" >/dev/null || true
+        log "blocked $task_id ($verify_reason, log: $log_file)"
+      elif run_taskctl done "$AGENT" "$task_id" "Completed by worker; log: $log_file" >/dev/null; then
         log "completed $task_id (log: $log_file)"
       else
         local terminal_state

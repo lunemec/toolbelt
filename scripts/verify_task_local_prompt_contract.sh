@@ -54,7 +54,7 @@ setup_taskctl_stub() {
 set -euo pipefail
 cmd="${1:-}"
 case "$cmd" in
-  claim|done|block|lock-acquire|lock-heartbeat|lock-release-task)
+  claim|done|verify-done|block|lock-acquire|lock-heartbeat|lock-release-task)
     exit 0
     ;;
   *)

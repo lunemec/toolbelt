@@ -75,6 +75,9 @@ fi
 if [[ "$cmd" == "done" ]]; then
   exit 0
 fi
+if [[ "$cmd" == "verify-done" ]]; then
+  exit 0
+fi
 if [[ "$cmd" == "block" ]]; then
   exit 0
 fi

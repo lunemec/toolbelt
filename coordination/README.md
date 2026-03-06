@@ -2,7 +2,7 @@
 
 This board implements a skill-based multi-agent pipeline.
 
-You can talk to one orchestrator agent (typically `pm`), and it can delegate to any number of skill agents (`designer`, `architect`, `fe`, `be`, etc.) by creating tasks for their queues.
+You can talk to one orchestrator agent (typically `pm`), and it can delegate to any number of skill agents (`researcher`, `planner`, `designer`, `architect`, `fe`, `be`, etc.) by creating tasks for their queues.
 
 ## Core Model
 - Any agent name is allowed (dynamic skill agents).
@@ -30,11 +30,15 @@ When an agent blocks a task:
 
 This gives every sub-agent a stop-and-escalate path.
 
-## Clarification Loop Contract
-Top-level orchestrator behavior (`pm` or `coordinator`) must follow an iterative requirement-clarification loop:
+## Phase Contract
+Top-level orchestrator behavior (`pm` or `coordinator`) follows strict phases:
+- `clarify -> research -> plan -> execute -> review -> closeout`
+- Do not skip a phase gate.
+
+Clarification remains iterative and strict:
 - Ask exactly one user-facing clarification question per turn.
 - Use specialist outputs to either refine requirements or generate the next single clarification question.
-- Do not switch from `clarify` to `plan`/execution-closeout without explicit user confirmation.
+- Do not switch from `clarify` to `research`/`plan` without explicit user confirmation.
 - Keep clarification open while blocker report tasks (`BLK-*`) are unresolved.
 - Keep clarification open while unresolved critical assumptions remain.
 
@@ -51,8 +55,8 @@ Safety guard:
 - `TASK_ROOT_DIR`, `AGENT_ROOT_DIR`, `AGENT_TASKCTL`, and `AGENT_WORKER_SCRIPT` are restricted to paths under `/workspace`.
 
 Host launcher (recommended for cross-project use):
-- Use `scripts/project_container.sh up /path/to/project` to run any project inside a container with that project mounted to `/workspace`.
-- This preserves the `/workspace` safety contract while letting you switch projects without copying scripts.
+- Use `scripts/toolbelt.sh <path> [<path> ...]` to run with only selected folders/files mounted into `/workspace/<basename>`.
+- Add `--docker` only when host Docker daemon access is needed.
 
 Image baseline bootstrap:
 - The toolbelt image now carries a canonical coordination baseline under `/opt/codex-baseline`.
@@ -65,6 +69,8 @@ Image baseline bootstrap:
 ```bash
 # create/scaffold an agent lane + role file
 scripts/taskctl.sh ensure-agent pm
+scripts/taskctl.sh ensure-agent researcher
+scripts/taskctl.sh ensure-agent planner
 scripts/taskctl.sh ensure-agent designer
 scripts/taskctl.sh ensure-agent architect
 scripts/taskctl.sh ensure-agent fe
@@ -83,6 +89,7 @@ scripts/taskctl.sh delegate architect be TASK-1003 "Implement profile API" --pri
 
 # claim + transition
 scripts/taskctl.sh claim fe
+scripts/taskctl.sh verify-done fe TASK-1002
 scripts/taskctl.sh done fe TASK-1002 "UI delivered and tested"
 scripts/taskctl.sh block be TASK-1003 "Waiting on auth contract"
 
@@ -163,8 +170,8 @@ scripts/agents_ctl.sh stop
 Worker behavior:
 - Polls and claims from `inbox/<agent>/<priority>/`.
 - Assembles execution prompt from task-local canonical sections (`Prompt`, `Context`, `Deliverables`, `Validation`) with sidecar-first fallback behavior.
-- Applies reasoning policy by agent role: `pm`/`coordinator`/`architect` default to `xhigh`; other agents default to `none` reasoning effort (`default`/`null` aliases normalize to `none`).
-- On success, moves task to `done`.
+- Applies reasoning policy by agent role: `pm`/`coordinator`/`planner`/`researcher`/`architect`/`be`/`review` default to `xhigh`; other agents default to `medium` reasoning effort (`default`/`null` aliases normalize to `none`).
+- On successful worker execution, `taskctl verify-done` must pass before task transition to `done`.
 - On failure, moves task to `blocked` and triggers blocker report to creator.
 - `status` auto-cleans stale PID files from dead workers.
 - For terminals that do not preserve detached background jobs across calls, use `agents_ctl.sh once` instead of `start`.
@@ -178,15 +185,17 @@ scripts/verify_orchestrator_clarification_suite.sh
 
 Coverage includes:
 - top-level prompt contract (single-question clarification + phase/completion gates),
-- coordinator instructions contract (iterative clarification loop),
-- task template lock metadata persistence,
+- coordinator instructions contract (iterative clarification loop + phase gates),
+- task template metadata persistence,
+- task done-verification contract,
 - taskctl lock lifecycle and stale-reap audit behavior,
 - worker lock conflict/heartbeat/release behavior,
 - clarification workflow simulation for blocker routing and completion gating.
 
 ## Suggested Operating Pattern
 1. Start with `pm` (or `coordinator`) and iterate one clarification question at a time.
-2. Delegate specialist discovery tasks during clarification whenever uncertainty blocks precision.
+2. Delegate discovery to `researcher`, then produce decision-complete breakdowns via `planner`/`architect`.
 3. Ensure coding tasks include `--write-target` metadata so workers can enforce lock safety.
-4. Resolve blocker report tasks before declaring clarification complete.
-5. Finalize planning/execution checkpoints only after explicit user confirmation and closed clarification gates.
+4. Populate `requirement_ids`, `evidence_commands`, and `evidence_artifacts` for execute/review tasks.
+5. Resolve blocker report tasks before declaring clarification complete.
+6. Finalize closeout only when requirement matrix rows are fully verified.

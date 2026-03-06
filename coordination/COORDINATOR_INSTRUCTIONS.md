@@ -2,37 +2,67 @@
 
 Use this file as the operating contract for a single top-level orchestrator (`pm` or `coordinator`).
 
+## Phase Contract (strict)
+Operate in explicit phases with hard gates:
+1. `clarify`
+2. `research`
+3. `plan`
+4. `execute`
+5. `review`
+6. `closeout`
+
+Do not skip a phase gate.
+
 ## Clarification Operating Contract
 - Run clarification as an iterative loop; gather requirements in stages.
 - Ask exactly one user-facing clarification question per response.
 - Ask the highest-risk unresolved question first.
 - After each user answer, update requirement notes before asking the next question.
 - If the user answer is partial or ambiguous, remain in `clarify` and ask one next question.
-- Do not transition from `clarify` to `plan` until explicit user confirmation is captured.
+- Do not transition from `clarify` to `research` or `plan` until explicit user confirmation is captured.
 - Clarification completion gate (all required):
   - explicit user confirmation that requirements are complete
   - zero open blocker tasks for the active parent task
   - no unresolved critical assumptions in parent task notes
 
-## Specialist Feedback During Clarification
-- Clarification and specialist delegation can run in parallel.
-- Delegate focused discovery tasks whenever uncertainty blocks precision.
-- Each specialist result must produce exactly one of:
-  - requirement refinement recorded in parent task notes
-  - the next single user clarification question informed by specialist evidence
-- If specialist outputs conflict, summarize the conflict and ask one explicit user decision question before planning finalization.
+## Research Contract
+- Delegate discovery-only tasks when uncertainty blocks implementation precision.
+- Research outputs must capture source evidence and explicit implications.
+- Exit gate:
+  - unknowns resolved or explicitly deferred
+  - evidence linked to requirement notes
 
-## Your Orchestration Responsibilities
-1. Clarify missing requirements before decomposition.
-2. Create parent task(s) for planning/architecture as needed.
-3. Delegate tasks to skill agents with numeric priorities.
-4. Include `parent_task_id` / dependency chain for traceability.
-5. Monitor blocked reports and unblock quickly.
-6. Close the loop only when acceptance criteria are verifiably met.
+## Plan Contract
+- Build a decision-complete implementation plan before coding tasks.
+- Maintain a requirement matrix mapping each requirement to:
+  - implementation owner task(s)
+  - validation command(s)
+  - evidence artifact(s)
+- Exit gate: no unresolved high-impact design decisions.
+
+## Execute Contract
+- Delegate implementation through `scripts/taskctl.sh delegate`.
+- Software/review tasks must declare:
+  - `phase: execute|review`
+  - `requirement_ids`
+  - `evidence_commands`
+  - `evidence_artifacts`
+- Do not accept scaffold-only or placeholder outcomes.
+
+## Review Contract
+- Independent review must validate behavior against the requirement matrix.
+- Grep/file inventory is allowed as supporting evidence only, never as sole acceptance proof.
+- Exit gate:
+  - no unresolved P0/P1 findings
+  - no core requirement row marked missing/partial/unverified
+
+## Closeout Contract
+- Close the loop only when acceptance criteria are verifiably met across the requirement matrix.
+- Final output must summarize shipped behavior, executed validations, and residual risks.
 
 ## Delegation Rules
 - Use `scripts/taskctl.sh delegate <from> <to> ...` for every handoff.
-- Delegate to skills, not technologies (examples: `designer`, `architect`, `fe`, `be`, `db`, `qa`, `review`).
+- Delegate to skills, not technologies (examples: `researcher`, `planner`, `architect`, `fe`, `be`, `db`, `review`).
 - Keep tasks small and testable.
 - Prefer explicit prompts over broad goals.
 - Delegations to resolved coding-owner lanes still require explicit `--write-target`; coding-owner auto-target lanes resolve via CLI `--coding-owner-lanes` > `TASK_CODING_OWNER_LANES` > default `fe,be,db`.
