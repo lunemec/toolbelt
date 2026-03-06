@@ -175,7 +175,7 @@ scripts/coordination_repair.sh
 ```
 
 For interactive shell sessions, container startup prints a short MOTD with quick commands for:
-- most-used CLIs first (`codex`, `ralph`, `openclaw`, `codex-init-workspace`)
+- most-used CLIs first (`codex`, `ralph`, `openclaw`, `claude`, `gemini`, `cursor` with `agent`/`cursor-agent` aliases, `codex-init-workspace`)
 - workspace bootstrap (`codex-init-workspace`)
 - coordination repair (`scripts/coordination_repair.sh`)
 - coordination workers (`scripts/agents_ctl.sh start`)

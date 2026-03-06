@@ -38,7 +38,7 @@ All notable changes to this project are documented in this file.
 - `scripts/agent_worker.sh` now normalizes `AGENT_*_REASONING_EFFORT=default` and legacy `null` inputs to `none` to avoid config parse failures.
 - `scripts/agent_worker.sh` now guards task transitions so one-shot workers do not fail when a task already self-transitioned out of `in_progress` (for example when an agent calls `taskctl done` directly).
 - `README.md` and `AGENTS.md` now document the planner/orchestrator reasoning policy and corresponding worker environment overrides.
-- Startup MOTD now presents grouped/colorized sections with most-used commands first (`codex`, `ralph`, `openclaw`, `codex-init-workspace`), plus a dynamic absolute-path listing of all image-baked scripts under `/opt/codex-baseline/scripts/`.
+- Startup MOTD now presents grouped/colorized sections with most-used commands first (`codex`, `ralph`, `openclaw`, `claude`, `gemini`, `cursor` with `agent`/`cursor-agent` aliases, `codex-init-workspace`), plus a dynamic absolute-path listing of all image-baked scripts under `/opt/codex-baseline/scripts/`.
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now enforces a PM-style plan loop (deep clarification, specialist delegation cycles, aggregation, blocker-first handling, and explicit next-step checkpoints).
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now requires TDD red-green-blue workflow evidence for software specialist tasks unless explicitly waived by the user.
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now requires top-level delegation to define clear per-task success gates where applicable, with mandatory explicit gates for software tasks.

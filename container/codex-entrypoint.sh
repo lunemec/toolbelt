@@ -102,6 +102,12 @@ show_motd() {
   printf '    Launch Ralph CLI.\n'
   printf '  %b\n' "${yellow}openclaw${reset}"
   printf '    Launch OpenClaw CLI.\n'
+  printf '  %b\n' "${yellow}claude${reset}"
+  printf '    Launch Anthropic Claude Code CLI.\n'
+  printf '  %b\n' "${yellow}gemini${reset}"
+  printf '    Launch Google Gemini CLI.\n'
+  printf '  %b\n' "${yellow}cursor${reset}"
+  printf '    Launch Cursor Agent CLI (`agent` and `cursor-agent` aliases).\n'
   printf '  %b\n' "${yellow}codex-init-workspace --workspace /workspace${reset}"
   printf '    Seed /workspace/scripts and /workspace/coordination from the image baseline.\n'
   printf '\n'
