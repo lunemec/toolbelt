@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 ### Added
 - Global npm install for `@googleworkspace/cli` in the development image.
 - Global npm install for `openclaw` in the development image.
+- Additional AI provider CLIs in the development image: `@anthropic-ai/claude-code` (`claude`), `@google/gemini-cli` (`gemini`), and Cursor Agent (`cursor`/`agent`/`cursor-agent`).
+- Additional terminal tooling in the development image: `fzf`, `cloc`, `sloccount`, `hyperfine`, `entr`, `httpie`, and `ncdu`.
+- Additional performance/request tooling in the development image: `wrk`, `ab` (`apache2-utils`), `hey`, `ghz`, `grpcurl`, `wget`, and `aria2`.
 - Local background specialist worker system with `scripts/agent_worker.sh` and `scripts/agents_ctl.sh`.
 - Role prompt files for `db`, `be`, `fe`, and `review` agents in `coordination/roles/`.
 - Coordinator documentation for one-chat operation with background task execution.

@@ -3,10 +3,15 @@ FROM node:22-bookworm
 
 ARG GO_VERSION=1.23.8
 ARG RUST_TOOLCHAIN=stable
+ARG CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6
+ARG GHZ_VERSION=v0.121.0
+ARG GRPCURL_VERSION=v1.9.3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash ca-certificates curl git docker.io python3 make g++ \
-  less vim nano tree tmux ripgrep fd-find jq yq zip xz-utils \
+  less vim nano tree tmux fzf ripgrep fd-find jq yq zip xz-utils \
+  cloc sloccount hyperfine entr httpie ncdu \
+  wrk apache2-utils hey wget aria2 \
   procps iproute2 iputils-ping dnsutils netcat-openbsd lsof strace rsync openssh-client \
   build-essential pkg-config cmake ninja-build libssl-dev libffi-dev \
   python3-pip python3-venv pipx shellcheck shfmt \
@@ -52,8 +57,26 @@ RUN pipx install uv \
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
-RUN npm install -g @openai/codex @ralph-orchestrator/ralph-cli @googleworkspace/cli openclaw \
+RUN npm install -g @openai/codex @anthropic-ai/claude-code @google/gemini-cli @ralph-orchestrator/ralph-cli @googleworkspace/cli openclaw \
   && mv /usr/local/bin/codex /usr/local/bin/codex-real
+
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) cursor_arch='x64' ;; \
+    arm64) cursor_arch='arm64' ;; \
+    *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+  esac; \
+  cursor_root="/root/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}"; \
+  mkdir -p "$cursor_root" /root/.local/bin; \
+  curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz" \
+    | tar --strip-components=1 -xzf - -C "$cursor_root"; \
+  ln -sf "${cursor_root}/cursor-agent" /root/.local/bin/cursor; \
+  ln -sf "${cursor_root}/cursor-agent" /root/.local/bin/agent; \
+  ln -sf "${cursor_root}/cursor-agent" /root/.local/bin/cursor-agent
+
+RUN GOBIN=/usr/local/bin go install github.com/bojand/ghz/cmd/ghz@${GHZ_VERSION} \
+  && GOBIN=/usr/local/bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@${GRPCURL_VERSION}
 
 COPY scripts/*.sh /opt/codex-baseline/scripts/
 COPY coordination /opt/codex-baseline/coordination
@@ -71,6 +94,11 @@ RUN set -eux; \
   python3 --version; pip3 --version; uv --version; poetry --version; \
   go version; rustc --version; cargo --version; \
   rg --version; fd --version; jq --version; yq --version; \
+  fzf --version; cloc --version; sloccount --version; hyperfine --version; \
+  http --version; ncdu --version; command -v entr; \
+  claude --version; gemini --version; cursor --version; agent --version; cursor-agent --version; \
+  wrk --version || true; ab -V; hey --help | head -n 2; \
+  ghz --version; grpcurl --version; wget --version; aria2c --version; \
   openclaw --version; \
   ralph --version
 

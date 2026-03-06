@@ -17,7 +17,8 @@ Installed toolchains and CLIs include:
 - Python 3, `pip3`, `uv`, `poetry`, `pre-commit`
 - Go (official tarball install)
 - Rust (`rustup`, `cargo`, `rustc`)
-- Dev/system tools: `git`, `docker`, `rg`, `fd`, `jq`, `yq`, `tmux`, `shellcheck`, `shfmt`, and more
+- Dev/system tools: `git`, `docker`, `fzf`, `rg`, `fd`, `jq`, `yq`, `cloc`, `sloccount`, `hyperfine`, `wrk`, `ab`, `hey`, `ghz`, `grpcurl`, `httpie`, `wget`, `aria2`, `entr`, `ncdu`, `tmux`, `shellcheck`, `shfmt`, and more
+- AI CLIs: `codex`, `claude`, `gemini`, and Cursor Agent as `cursor` (`agent`/`cursor-agent` aliases)
 - Workspace CLIs: `ralph`, `openclaw`, and `@googleworkspace/cli`
 - `codex` wrapper and `codex-real`
 
@@ -104,7 +105,9 @@ If single-file mounts are unreliable in your Docker runtime, mount a temporary d
 3. Verify core tooling:
 
 ```bash
-command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq openclaw codex codex-real
+command -v node npm pnpm python3 pip3 uv poetry go rustc cargo \
+  fzf rg fd jq yq cloc sloccount hyperfine wrk ab hey ghz grpcurl http wget aria2c entr ncdu \
+  codex codex-real claude gemini cursor agent cursor-agent openclaw
 ```
 
 ## Recommended Host Workflow (Any Project Path)
