@@ -26,6 +26,7 @@ run_taskctl() {
 
 inject_result_block() {
   local task_file="$1"
+  local log_path="$2"
   local tmp
   tmp="$(mktemp)"
   awk '
@@ -38,7 +39,7 @@ inject_result_block() {
       print "- PASS: Criterion 1"
       print "Command: go test ./pkg/service -count=1"
       print "Exit: 0"
-      print "Log: /tmp/verify-done.log"
+      print "Log: __VERIFY_DONE_LOG__"
       print "Observed: PASS"
       in_result = 1
       emitted = 1
@@ -60,11 +61,11 @@ inject_result_block() {
         print "- PASS: Criterion 1"
         print "Command: go test ./pkg/service -count=1"
         print "Exit: 0"
-        print "Log: /tmp/verify-done.log"
+        print "Log: __VERIFY_DONE_LOG__"
         print "Observed: PASS"
       }
     }
-  ' "$task_file" >"$tmp"
+  ' "$task_file" | sed "s|__VERIFY_DONE_LOG__|$log_path|g" >"$tmp"
   mv "$tmp" "$task_file"
 }
 
@@ -98,10 +99,13 @@ artifact_path="$smoke_root/runtime/verify-done-artifact.txt"
 mkdir -p "$(dirname "$artifact_path")"
 echo "artifact" > "$artifact_path"
 
+log_path="$smoke_root/runtime/verify-done.log"
+echo "PASS" > "$log_path"
+
 sed -i "s|^requirement_ids:.*|requirement_ids: ['REQ-001']|" "$exec_task_file"
 sed -i "s|^evidence_commands:.*|evidence_commands: ['go test ./pkg/service -count=1']|" "$exec_task_file"
 sed -i "s|^evidence_artifacts:.*|evidence_artifacts: ['$artifact_path']|" "$exec_task_file"
-inject_result_block "$exec_task_file"
+inject_result_block "$exec_task_file" "$log_path"
 
 run_taskctl verify-done be "$exec_task_id" >/dev/null
 run_taskctl done be "$exec_task_id" "verified done contract smoke" >/dev/null

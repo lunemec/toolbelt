@@ -5,6 +5,7 @@ ROOT="${TASK_ROOT_DIR:-coordination}"
 TEMPLATE="$ROOT/templates/TASK_TEMPLATE.md"
 DEFAULT_BENCHMARK_PROFILE_PATH="$ROOT/benchmark_profiles/vault_sync_prompt_v1.json"
 DEFAULT_BENCHMARK_SCORECARD_PATH="$ROOT/reports/coordinator/benchmark_scorecard.json"
+DEFAULT_BENCHMARK_RERUN_DIR="$ROOT/reports/coordinator/benchmark_reruns"
 DEFAULT_OWNER_AGENT="${TASK_DEFAULT_OWNER:-pm}"
 DEFAULT_CREATOR_AGENT="${TASK_DEFAULT_CREATOR:-pm}"
 DEFAULT_PRIORITY="${TASK_DEFAULT_PRIORITY:-50}"
@@ -16,6 +17,12 @@ DEFAULT_CODING_OWNER_LANES_RAW="fe,be,db"
 CODING_OWNER_LANES_ENV_RAW="${TASK_CODING_OWNER_LANES:-$DEFAULT_CODING_OWNER_LANES_RAW}"
 CODING_OWNER_LANES_OVERRIDE_RAW=""
 VALID_TASK_PHASES_RAW="clarify research plan execute review closeout"
+CREATE_BENCHMARK_PROFILE_OVERRIDE=""
+CREATE_BENCHMARK_WORKDIR_OVERRIDE=""
+CREATE_BENCHMARK_SCORECARD_OVERRIDE=""
+CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE=""
+CREATE_BENCHMARK_INHERIT_PARENT=1
+declare -a CREATE_BENCHMARK_GATE_TARGET_OVERRIDES=()
 
 abs_path() {
   local path="$1"
@@ -56,14 +63,16 @@ now() {
 usage() {
   cat <<USAGE
 Usage:
-  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>]
-  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>]
+  $0 create <TASK_ID> <TITLE> [--to <owner_agent>] [--from <creator_agent>] [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>] [--benchmark-profile <path|none>] [--benchmark-workdir <path>] [--gate-target <Gx>]... [--scorecard-artifact <path|none>] [--benchmark-opt-out-reason <text>] [--no-benchmark-inherit]
+  $0 delegate <from_agent> <to_agent> <TASK_ID> <TITLE> [--priority <N>] [--parent <TASK_ID>] [--phase <task_phase>] [--write-target <path>]... [--coding-owner-lanes <agents>] [--benchmark-profile <path|none>] [--benchmark-workdir <path>] [--gate-target <Gx>]... [--scorecard-artifact <path|none>] [--benchmark-opt-out-reason <text>] [--no-benchmark-inherit]
   $0 assign <TASK_ID> <agent> [--coding-owner-lanes <agents>]
   $0 claim <agent> [--coding-owner-lanes <agents>]
   $0 verify-done <agent> <TASK_ID>
   $0 benchmark-verify <agent> <TASK_ID> [--json]
+  $0 benchmark-rerun <agent> <TASK_ID>
   $0 benchmark-score <agent> <TASK_ID>
   $0 benchmark-closeout-check <agent> <TASK_ID>
+  $0 benchmark-audit-chain <agent> <TASK_ID>
   $0 done <agent> <TASK_ID> [NOTE]
   $0 block <agent> <TASK_ID> <REASON>
   $0 lock-acquire <TASK_ID> <owner_agent> <target>
@@ -83,7 +92,8 @@ Notes:
   - Coding-owner auto-target lanes default to "fe,be,db" (set TASK_CODING_OWNER_LANES; override once with --coding-owner-lanes).
   - Supported task phases: clarify, research, plan, execute, review, closeout.
   - done transitions run strict `verify-done` checks before moving tasks to done.
-  - benchmark-* commands enforce profile-driven gates/scores and write scorecard artifacts for benchmark reviews.
+  - benchmark-* commands enforce profile-driven gates/scores, strict evidence contracts, and independent rerun checks.
+  - Benchmark metadata inherits from parent tasks by default; pass --no-benchmark-inherit only with --benchmark-opt-out-reason.
   - lock-clean-stale requires orchestrator actor identity via --actor or TASK_ACTOR_AGENT.
   - Default stale-lock reaper lanes are "pm coordinator" (override with TASK_LOCK_REAPER_AGENTS).
   - ensure-agent creates role prompts when missing; existing role prompts are stable unless --force is used.
@@ -291,6 +301,39 @@ set_coding_owner_lanes_override() {
   CODING_OWNER_LANES_OVERRIDE_RAW="$raw"
 }
 
+reset_create_benchmark_overrides() {
+  CREATE_BENCHMARK_PROFILE_OVERRIDE=""
+  CREATE_BENCHMARK_WORKDIR_OVERRIDE=""
+  CREATE_BENCHMARK_SCORECARD_OVERRIDE=""
+  CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE=""
+  CREATE_BENCHMARK_INHERIT_PARENT=1
+  CREATE_BENCHMARK_GATE_TARGET_OVERRIDES=()
+}
+
+append_unique_create_gate_target_override() {
+  local gate_target="$1"
+  gate_target="$(printf '%s' "$gate_target" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  [[ -n "$gate_target" ]] || {
+    echo "--gate-target requires a non-empty value" >&2
+    exit 1
+  }
+  local existing
+  for existing in "${CREATE_BENCHMARK_GATE_TARGET_OVERRIDES[@]}"; do
+    [[ "$existing" == "$gate_target" ]] && return 0
+  done
+  CREATE_BENCHMARK_GATE_TARGET_OVERRIDES+=("$gate_target")
+}
+
+normalize_benchmark_scalar() {
+  local value="${1:-}"
+  value="$(printf '%s' "$value" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+  if [[ -z "$value" || "$value" == "null" ]]; then
+    printf 'none'
+    return 0
+  fi
+  printf '%s' "$value"
+}
+
 resolve_coding_owner_lanes() {
   local raw="$CODING_OWNER_LANES_ENV_RAW"
   if [[ -n "$CODING_OWNER_LANES_OVERRIDE_RAW" ]]; then
@@ -362,6 +405,26 @@ canonicalize_target_path() {
     echo "target must resolve under /workspace: $target" >&2
     exit 1
   }
+
+  if [[ "$absolute_target" == "/workspace" ]]; then
+    printf '.'
+  else
+    printf '%s' "${absolute_target#/workspace/}"
+  fi
+}
+
+canonicalize_workspace_path_soft() {
+  local target="$1"
+  [[ -n "$target" ]] || return 1
+
+  local absolute_target
+  if [[ "$target" == /* ]]; then
+    absolute_target="$(abs_path "$target")"
+  else
+    absolute_target="$(abs_path "/workspace/$target")"
+  fi
+
+  [[ "$absolute_target" == "/workspace" || "$absolute_target" == /workspace/* ]] || return 1
 
   if [[ "$absolute_target" == "/workspace" ]]; then
     printf '.'
@@ -1510,17 +1573,27 @@ task_has_benchmark_profile() {
   local task_file="$1"
   local raw
   raw="$(task_yaml_scalar_value "$task_file" "benchmark_profile" 2>/dev/null || true)"
-  raw="$(printf '%s' "$raw" | sed -E "s/^'+|'+$//g")"
+  raw="$(normalize_benchmark_scalar "$raw")"
 
   [[ -n "$raw" && "$raw" != "none" && "$raw" != "null" ]]
 }
 
-task_benchmark_profile_path() {
+task_benchmark_opt_out_reason() {
   local task_file="$1"
   local raw
-  raw="$(task_yaml_scalar_value "$task_file" "benchmark_profile" 2>/dev/null || true)"
-  raw="$(printf '%s' "$raw" | sed -E "s/^'+|'+$//g")"
+  raw="$(task_yaml_scalar_value "$task_file" "benchmark_opt_out_reason" 2>/dev/null || true)"
+  raw="$(printf '%s' "$raw" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
 
+  if [[ -z "$raw" || "$raw" == "none" || "$raw" == "null" ]]; then
+    printf ''
+    return 0
+  fi
+
+  printf '%s' "$raw"
+}
+
+resolve_benchmark_profile_path_from_value() {
+  local raw="$1"
   if [[ -z "$raw" || "$raw" == "none" || "$raw" == "null" ]]; then
     raw="$DEFAULT_BENCHMARK_PROFILE_PATH"
   fi
@@ -1545,6 +1618,26 @@ task_benchmark_profile_path() {
   }
 
   printf '%s' "$absolute"
+}
+
+task_benchmark_profile_path() {
+  local task_file="$1"
+  local raw
+  raw="$(task_yaml_scalar_value "$task_file" "benchmark_profile" 2>/dev/null || true)"
+  raw="$(normalize_benchmark_scalar "$raw")"
+  resolve_benchmark_profile_path_from_value "$raw"
+}
+
+benchmark_gate_targets_for_profile() {
+  local profile_file="$1"
+  require_command jq
+
+  [[ -f "$profile_file" ]] || {
+    echo "benchmark profile not found for gate extraction: $profile_file" >&2
+    return 1
+  }
+
+  jq -r '.gates[]?.id // empty' "$profile_file"
 }
 
 task_scorecard_artifact_path() {
@@ -1579,6 +1672,83 @@ task_scorecard_artifact_path() {
   printf '%s' "$absolute"
 }
 
+default_scorecard_artifact_for_task() {
+  local owner_agent="$1"
+  local task_id="$2"
+  printf 'reports/%s/benchmark_scorecards/%s.json' "$owner_agent" "$task_id"
+}
+
+task_benchmark_workdir_path() {
+  local task_file="$1"
+  local raw
+  raw="$(task_yaml_scalar_value "$task_file" "benchmark_workdir" 2>/dev/null || true)"
+  raw="$(printf '%s' "$raw" | sed -E "s/^'+|'+$//g")"
+
+  if [[ -z "$raw" || "$raw" == "none" || "$raw" == "null" ]]; then
+    raw="."
+  fi
+
+  local absolute
+  if [[ "$raw" == /* ]]; then
+    absolute="$(abs_path "$raw")"
+  else
+    absolute="$(abs_path "$(pwd -P)/$raw")"
+  fi
+
+  [[ "$absolute" == "/workspace" || "$absolute" == /workspace/* ]] || {
+    echo "benchmark workdir must resolve under /workspace: $raw" >&2
+    return 1
+  }
+  [[ -d "$absolute" ]] || {
+    echo "benchmark workdir does not exist: $absolute" >&2
+    return 1
+  }
+
+  printf '%s' "$absolute"
+}
+
+task_benchmark_rerun_summary_path() {
+  local task_file="$1"
+  local agent="$2"
+  local task_id
+  task_id="$(field_value "$task_file" "id")"
+  [[ -n "$task_id" ]] || task_id="$(basename "$task_file" .md)"
+
+  local path="$ROOT/reports/$agent/benchmark_reruns/${task_id}.json"
+  local absolute
+  absolute="$(abs_path "$path")"
+  [[ "$absolute" == "/workspace" || "$absolute" == /workspace/* ]] || {
+    echo "benchmark rerun summary path must resolve under /workspace: $path" >&2
+    return 1
+  }
+  printf '%s' "$absolute"
+}
+
+task_benchmark_required_rerun_commands() {
+  local task_file="$1"
+  local profile_file
+  profile_file="$(task_benchmark_profile_path "$task_file")"
+  [[ -f "$profile_file" ]] || {
+    echo "benchmark rerun profile missing: $profile_file" >&2
+    return 1
+  }
+
+  local -a commands=()
+  while IFS= read -r cmd; do
+    [[ -n "$cmd" ]] || continue
+    commands+=("$cmd")
+  done < <(jq -r '.closeout.required_rerun_commands[]? // empty' "$profile_file")
+
+  if (( ${#commands[@]} == 0 )); then
+    while IFS= read -r cmd; do
+      [[ -n "$cmd" ]] || continue
+      commands+=("$cmd")
+    done < <(jq -r '.gate_required_commands.G1[]? // empty' "$profile_file")
+  fi
+
+  printf '%s\n' "${commands[@]}"
+}
+
 escape_ere() {
   local value="$1"
   printf '%s' "$value" | sed -E 's/[][(){}.^$*+?|\\/]/\\&/g'
@@ -1592,6 +1762,117 @@ extract_result_value_for_key() {
   escaped_key="$(escape_ere "$key")"
 
   printf '%s\n' "$result_body" | sed -nE "s/^[[:space:]]*-[[:space:]]*${escaped_key}:[[:space:]]*(${value_regex})[[:space:]]*$/\\1/p" | head -n1
+}
+
+extract_result_text_for_key() {
+  local result_body="$1"
+  local key="$2"
+  local escaped_key
+  escaped_key="$(escape_ere "$key")"
+  printf '%s\n' "$result_body" | sed -nE "s/^[[:space:]]*-[[:space:]]*${escaped_key}:[[:space:]]*(.+)[[:space:]]*$/\\1/p" | head -n1
+}
+
+trim_spaces() {
+  local value="$1"
+  printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+append_unique_array_value() {
+  local array_name="$1"
+  local candidate="$2"
+  local -n values_ref="$array_name"
+  local existing
+  for existing in "${values_ref[@]}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+  values_ref+=("$candidate")
+}
+
+parse_result_command_blocks() {
+  local result_body="$1"
+  local commands_name="$2"
+  local exits_name="$3"
+  local logs_name="$4"
+  local observed_name="$5"
+  local -n commands_ref="$commands_name"
+  local -n exits_ref="$exits_name"
+  local -n logs_ref="$logs_name"
+  local -n observed_ref="$observed_name"
+
+  commands_ref=()
+  exits_ref=()
+  logs_ref=()
+  observed_ref=()
+
+  local current_index=-1 line value
+  while IFS= read -r line; do
+    case "$line" in
+      Command:*)
+        value="$(trim_spaces "${line#Command:}")"
+        commands_ref+=("$value")
+        exits_ref+=("")
+        logs_ref+=("")
+        observed_ref+=("")
+        current_index=$(( ${#commands_ref[@]} - 1 ))
+        ;;
+      Exit:*)
+        if (( current_index >= 0 )); then
+          exits_ref[$current_index]="$(trim_spaces "${line#Exit:}")"
+        fi
+        ;;
+      Log:*)
+        if (( current_index >= 0 )); then
+          logs_ref[$current_index]="$(trim_spaces "${line#Log:}")"
+        fi
+        ;;
+      Observed:*)
+        if (( current_index >= 0 )); then
+          observed_ref[$current_index]="$(trim_spaces "${line#Observed:}")"
+        fi
+        ;;
+    esac
+  done <<< "$result_body"
+}
+
+command_block_index_for_exact_command() {
+  local needle="$1"
+  local commands_name="$2"
+  local -n commands_ref="$commands_name"
+  local idx
+  for idx in "${!commands_ref[@]}"; do
+    if [[ "${commands_ref[$idx]}" == "$needle" ]]; then
+      printf '%s' "$idx"
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_valid_exit_code_value() {
+  local value="$1"
+  [[ "$value" =~ ^-?[0-9]+$ ]]
+}
+
+command_block_matches_pattern_with_passing_exit() {
+  local pattern="$1"
+  local commands_name="$2"
+  local exits_name="$3"
+  local logs_name="$4"
+  local -n commands_ref="$commands_name"
+  local -n exits_ref="$exits_name"
+  local -n logs_ref="$logs_name"
+
+  local idx
+  for idx in "${!commands_ref[@]}"; do
+    if printf '%s' "${commands_ref[$idx]}" | grep -Eqi -- "$pattern"; then
+      if [[ "${exits_ref[$idx]}" == "0" && -n "${logs_ref[$idx]}" ]] \
+        && is_workspace_scoped_path "${logs_ref[$idx]}" \
+        && path_exists_in_workspace "${logs_ref[$idx]}"; then
+        return 0
+      fi
+    fi
+  done
+  return 1
 }
 
 is_number_value() {
@@ -1634,11 +1915,114 @@ task_phase_value() {
   normalize_phase_value "$phase"
 }
 
+task_parent_id_value() {
+  local task_file="$1"
+  local raw
+  raw="$(task_yaml_scalar_value "$task_file" "parent_task_id" 2>/dev/null || true)"
+  raw="$(printf '%s' "$raw" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+  printf '%s' "$raw"
+}
+
+task_parent_file_path() {
+  local task_file="$1"
+  local parent_id
+  parent_id="$(task_parent_id_value "$task_file")"
+  if [[ -z "$parent_id" || "$parent_id" == "none" ]]; then
+    return 1
+  fi
+
+  local parent_file
+  parent_file="$(find_existing_task "$parent_id")"
+  [[ -n "$parent_file" ]] || return 1
+  printf '%s' "$parent_file"
+}
+
+task_parent_chain_has_benchmark_profile() {
+  local task_file="$1"
+  local current="$task_file"
+  local hop_count=0
+
+  while (( hop_count < 128 )); do
+    local parent_file
+    if ! parent_file="$(task_parent_file_path "$current")"; then
+      return 1
+    fi
+
+    if task_has_benchmark_profile "$parent_file"; then
+      return 0
+    fi
+
+    current="$parent_file"
+    hop_count=$((hop_count + 1))
+  done
+
+  echo "task parent traversal exceeded limit while checking benchmark ancestry: $task_file" >&2
+  return 1
+}
+
+task_nearest_benchmark_ancestor_file() {
+  local task_file="$1"
+  local current="$task_file"
+  local hop_count=0
+
+  while (( hop_count < 128 )); do
+    local parent_file
+    if ! parent_file="$(task_parent_file_path "$current")"; then
+      return 1
+    fi
+
+    if task_has_benchmark_profile "$parent_file"; then
+      printf '%s' "$parent_file"
+      return 0
+    fi
+
+    current="$parent_file"
+    hop_count=$((hop_count + 1))
+  done
+
+  echo "task parent traversal exceeded limit while locating benchmark ancestor: $task_file" >&2
+  return 1
+}
+
+expected_status_for_task_path() {
+  local task_file="$1"
+  case "$task_file" in
+    "$ROOT"/inbox/*) printf 'inbox' ;;
+    "$ROOT"/in_progress/*) printf 'in_progress' ;;
+    "$ROOT"/done/*) printf 'done' ;;
+    "$ROOT"/blocked/*) printf 'blocked' ;;
+    *) printf '' ;;
+  esac
+}
+
+verify_task_path_status_consistency() {
+  local task_file="$1"
+  local expected_status
+  expected_status="$(expected_status_for_task_path "$task_file")"
+  [[ -n "$expected_status" ]] || return 0
+
+  local actual_status
+  actual_status="$(field_value "$task_file" "status")"
+  actual_status="$(trim_spaces "$actual_status")"
+
+  if [[ "$actual_status" != "$expected_status" ]]; then
+    echo "task path/status mismatch: file=$task_file expected_status=$expected_status actual_status=${actual_status:-<empty>}" >&2
+    return 1
+  fi
+
+  return 0
+}
+
 path_exists_in_workspace() {
   local artifact="$1"
   local canonical
-  canonical="$(canonicalize_target_path "$artifact")"
+  canonical="$(canonicalize_workspace_path_soft "$artifact")" || return 1
   [[ -e "/workspace/$canonical" ]]
+}
+
+is_workspace_scoped_path() {
+  local value="$1"
+  canonicalize_workspace_path_soft "$value" >/dev/null 2>&1
 }
 
 result_section_has_placeholder_text() {
@@ -1656,9 +2040,29 @@ verify_task_done_in_progress() {
     echo "task not in progress for verification: $task_file" >&2
     return 1
   }
+  verify_task_path_status_consistency "$task_file" || return 1
 
   local phase
   phase="$(task_phase_value "$task_file")" || return 1
+  local task_has_benchmark=0
+  if task_has_benchmark_profile "$task_file"; then
+    task_has_benchmark=1
+  fi
+  local task_has_benchmark_ancestor=0
+  if task_parent_chain_has_benchmark_profile "$task_file"; then
+    task_has_benchmark_ancestor=1
+  fi
+  local benchmark_opt_out_reason
+  benchmark_opt_out_reason="$(task_benchmark_opt_out_reason "$task_file")"
+
+  case "$phase" in
+    execute|review|closeout)
+      if [[ "$task_has_benchmark_ancestor" -eq 1 && "$task_has_benchmark" -eq 0 && -z "$benchmark_opt_out_reason" ]]; then
+        echo "verify-done failed: benchmark-parent strict phase requires benchmark metadata or benchmark_opt_out_reason (task_id=$task_id phase=$phase)" >&2
+        return 1
+      fi
+      ;;
+  esac
 
   local result_body
   result_body="$(extract_task_section "$task_file" "Result")"
@@ -1716,7 +2120,52 @@ verify_task_done_in_progress() {
     fi
   done
 
+  local -a result_command_blocks=()
+  local -a result_exit_blocks=()
+  local -a result_log_blocks=()
+  local -a result_observed_blocks=()
+  parse_result_command_blocks "$result_body" result_command_blocks result_exit_blocks result_log_blocks result_observed_blocks
+
+  local evidence_cmd
+  for evidence_cmd in "${evidence_commands[@]}"; do
+    local block_idx
+    if ! block_idx="$(command_block_index_for_exact_command "$evidence_cmd" result_command_blocks)"; then
+      echo "verify-done failed: missing structured command block for evidence command: $evidence_cmd" >&2
+      return 1
+    fi
+
+    local block_exit block_log block_observed
+    block_exit="${result_exit_blocks[$block_idx]}"
+    block_log="${result_log_blocks[$block_idx]}"
+    block_observed="${result_observed_blocks[$block_idx]}"
+
+    if ! is_valid_exit_code_value "$block_exit"; then
+      echo "verify-done failed: invalid or missing Exit value for command: $evidence_cmd" >&2
+      return 1
+    fi
+    if [[ -z "$block_log" ]]; then
+      echo "verify-done failed: missing Log value for command: $evidence_cmd" >&2
+      return 1
+    fi
+    if ! is_workspace_scoped_path "$block_log"; then
+      echo "verify-done failed: log path must resolve under /workspace: $block_log" >&2
+      return 1
+    fi
+    if ! path_exists_in_workspace "$block_log"; then
+      echo "verify-done failed: log file not found for command: $block_log" >&2
+      return 1
+    fi
+    if [[ -z "$block_observed" ]]; then
+      echo "verify-done failed: missing Observed value for command: $evidence_cmd" >&2
+      return 1
+    fi
+  done
+
   if phase_requires_strict_done_evidence "$phase"; then
+    if (( ${#result_command_blocks[@]} == 0 )); then
+      echo "verify-done failed: strict phase requires structured Command/Exit/Log/Observed evidence blocks" >&2
+      return 1
+    fi
     if (( ${#requirement_ids[@]} == 0 )); then
       echo "verify-done failed: strict phase requires non-empty requirement_ids frontmatter" >&2
       return 1
@@ -1753,10 +2202,44 @@ verify_task_done_in_progress() {
     fi
   fi
 
-  if task_has_benchmark_profile "$task_file"; then
+  if [[ "$task_has_benchmark" -eq 1 ]]; then
     if ! benchmark_verify_task_file "$task_file" >/dev/null; then
       echo "verify-done failed: benchmark evidence contract failed for task_id=$task_id" >&2
       return 1
+    fi
+
+    if [[ "$phase" == "closeout" ]]; then
+      local profile_file
+      profile_file="$(task_benchmark_profile_path "$task_file")"
+      local -a score_categories=()
+      while IFS= read -r category; do
+        [[ -n "$category" ]] || continue
+        score_categories+=("$category")
+      done < <(jq -r '.weight_order[]? // empty' "$profile_file")
+      if (( ${#score_categories[@]} == 0 )); then
+        while IFS= read -r category; do
+          [[ -n "$category" ]] || continue
+          score_categories+=("$category")
+        done < <(jq -r '.weights | keys[]' "$profile_file")
+      fi
+
+      local category
+      for category in "${score_categories[@]}"; do
+        if [[ -z "$(extract_result_value_for_key "$result_body" "$category" '[0-9]+([.][0-9]+)?')" ]]; then
+          echo "verify-done failed: closeout benchmark task missing category score row for $category" >&2
+          return 1
+        fi
+      done
+
+      if ! benchmark_audit_chain_task_file "$task_file" >/dev/null; then
+        echo "verify-done failed: benchmark chain audit failed for task_id=$task_id" >&2
+        return 1
+      fi
+
+      if ! benchmark_closeout_check_task_file "$task_file" "$agent" >/dev/null; then
+        echo "verify-done failed: benchmark closeout check failed for task_id=$task_id" >&2
+        return 1
+      fi
     fi
   fi
 
@@ -1780,7 +2263,7 @@ benchmark_verify_task_file() {
     return 1
   }
 
-  if ! jq -e '.weights and .gates and .requirements' "$profile_file" >/dev/null 2>&1; then
+  if ! jq -e '.weights and .gates and .requirements and .closeout' "$profile_file" >/dev/null 2>&1; then
     echo "benchmark-verify failed: invalid benchmark profile schema: $profile_file" >&2
     return 1
   fi
@@ -1789,10 +2272,22 @@ benchmark_verify_task_file() {
   result_body="$(extract_task_section "$task_file" "Result")"
 
   local -a requirement_ids=()
+  local -a evidence_commands=()
+  local -a evidence_artifacts=()
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
     requirement_ids+=("$item")
   done < <(task_yaml_array_values "$task_file" "requirement_ids")
+
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    evidence_commands+=("$item")
+  done < <(task_yaml_array_values "$task_file" "evidence_commands")
+
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    evidence_artifacts+=("$item")
+  done < <(task_yaml_array_values "$task_file" "evidence_artifacts")
 
   local -a gate_targets=()
   while IFS= read -r item; do
@@ -1808,7 +2303,24 @@ benchmark_verify_task_file() {
   local missing_requirement_status_entries=0
   local missing_gate_status_entries=0
   local missing_required_command_evidence=0
+  local missing_command_block_evidence=0
+  local missing_command_block_fields=0
+  local missing_required_artifact_evidence=0
+  local missing_rgb_credibility_evidence=0
   local -a findings=()
+
+  local -a command_block_commands=()
+  local -a command_block_exits=()
+  local -a command_block_logs=()
+  local -a command_block_observed=()
+  parse_result_command_blocks "$result_body" command_block_commands command_block_exits command_block_logs command_block_observed
+  local command_block_count="${#command_block_commands[@]}"
+
+  if (( command_block_count == 0 )); then
+    findings+=("missing structured command evidence blocks in ## Result (Command/Exit/Log/Observed)")
+    findings_count=$((findings_count + 1))
+    missing_command_block_evidence=$((missing_command_block_evidence + 1))
+  fi
 
   if (( ${#requirement_ids[@]} == 0 )); then
     findings+=("requirement_ids frontmatter is empty")
@@ -1874,13 +2386,236 @@ benchmark_verify_task_file() {
 
     local required_cmd
     for required_cmd in "${required_commands[@]}"; do
-      if ! printf '%s\n' "$result_body" | grep -Fq -- "Command: $required_cmd"; then
+      local required_idx
+      if ! required_idx="$(command_block_index_for_exact_command "$required_cmd" command_block_commands)"; then
         findings+=("missing required command evidence for $gate_id: $required_cmd")
+        findings_count=$((findings_count + 1))
+        missing_required_command_evidence=$((missing_required_command_evidence + 1))
+        continue
+      fi
+
+      local required_exit required_log required_observed
+      required_exit="${command_block_exits[$required_idx]}"
+      required_log="${command_block_logs[$required_idx]}"
+      required_observed="${command_block_observed[$required_idx]}"
+
+      if ! is_valid_exit_code_value "$required_exit"; then
+        findings+=("invalid exit code for $gate_id required command: $required_cmd")
+        findings_count=$((findings_count + 1))
+        missing_command_block_fields=$((missing_command_block_fields + 1))
+      elif [[ "$required_exit" != "0" ]]; then
+        findings+=("required command for $gate_id did not pass (exit=$required_exit): $required_cmd")
+        findings_count=$((findings_count + 1))
+        missing_required_command_evidence=$((missing_required_command_evidence + 1))
+      fi
+
+      if [[ -z "$required_log" ]]; then
+        findings+=("missing log path for $gate_id required command: $required_cmd")
+        findings_count=$((findings_count + 1))
+        missing_command_block_fields=$((missing_command_block_fields + 1))
+      elif ! is_workspace_scoped_path "$required_log"; then
+        findings+=("log path must resolve under /workspace for $gate_id required command: $required_log")
+        findings_count=$((findings_count + 1))
+        missing_command_block_fields=$((missing_command_block_fields + 1))
+      elif ! path_exists_in_workspace "$required_log"; then
+        findings+=("log artifact missing for $gate_id required command: $required_log")
+        findings_count=$((findings_count + 1))
+        missing_command_block_fields=$((missing_command_block_fields + 1))
+      fi
+
+      if [[ -z "$required_observed" ]]; then
+        findings+=("missing observed summary for $gate_id required command: $required_cmd")
+        findings_count=$((findings_count + 1))
+        missing_command_block_fields=$((missing_command_block_fields + 1))
+      fi
+    done
+
+    local -a required_command_patterns=()
+    while IFS= read -r pattern; do
+      [[ -n "$pattern" ]] || continue
+      required_command_patterns+=("$pattern")
+    done < <(jq -r --arg gate "$gate_id" '.gate_required_command_patterns[$gate][]? // empty' "$profile_file")
+
+    local required_pattern
+    for required_pattern in "${required_command_patterns[@]}"; do
+      if ! command_block_matches_pattern_with_passing_exit "$required_pattern" command_block_commands command_block_exits command_block_logs; then
+        findings+=("missing passing command evidence matching pattern for $gate_id: $required_pattern")
         findings_count=$((findings_count + 1))
         missing_required_command_evidence=$((missing_required_command_evidence + 1))
       fi
     done
   done
+
+  local -a workspace_artifacts=()
+  local artifact_candidate canonical_candidate
+  for artifact_candidate in "${evidence_artifacts[@]}"; do
+    [[ -n "$artifact_candidate" ]] || continue
+    if canonical_candidate="$(canonicalize_workspace_path_soft "$artifact_candidate")" && [[ -e "/workspace/$canonical_candidate" ]]; then
+      append_unique_array_value workspace_artifacts "$canonical_candidate"
+      append_unique_array_value workspace_artifacts "/workspace/$canonical_candidate"
+    fi
+  done
+  for artifact_candidate in "${command_block_logs[@]}"; do
+    [[ -n "$artifact_candidate" ]] || continue
+    if canonical_candidate="$(canonicalize_workspace_path_soft "$artifact_candidate")" && [[ -e "/workspace/$canonical_candidate" ]]; then
+      append_unique_array_value workspace_artifacts "$canonical_candidate"
+      append_unique_array_value workspace_artifacts "/workspace/$canonical_candidate"
+    fi
+  done
+
+  local gate_for_artifacts
+  for gate_for_artifacts in "${gate_targets[@]}"; do
+    local -a required_artifact_patterns=()
+    while IFS= read -r pattern; do
+      [[ -n "$pattern" ]] || continue
+      required_artifact_patterns+=("$pattern")
+    done < <(jq -r --arg gate "$gate_for_artifacts" '.gate_required_artifact_patterns[$gate][]? // empty' "$profile_file")
+
+    local artifact_pattern
+    for artifact_pattern in "${required_artifact_patterns[@]}"; do
+      local matched=0
+      for artifact_candidate in "${workspace_artifacts[@]}"; do
+        if printf '%s' "$artifact_candidate" | grep -Eq -- "$artifact_pattern"; then
+          matched=1
+          break
+        fi
+      done
+
+      if [[ "$matched" -eq 0 ]]; then
+        findings+=("missing required artifact evidence for $gate_for_artifacts pattern: $artifact_pattern")
+        findings_count=$((findings_count + 1))
+        missing_required_artifact_evidence=$((missing_required_artifact_evidence + 1))
+      fi
+    done
+  done
+
+  local expected_cmd
+  for expected_cmd in "${evidence_commands[@]}"; do
+    local evidence_idx
+    if ! evidence_idx="$(command_block_index_for_exact_command "$expected_cmd" command_block_commands)"; then
+      findings+=("structured command block missing for evidence_commands entry: $expected_cmd")
+      findings_count=$((findings_count + 1))
+      missing_command_block_evidence=$((missing_command_block_evidence + 1))
+      continue
+    fi
+
+    local evidence_exit evidence_log evidence_observed
+    evidence_exit="${command_block_exits[$evidence_idx]}"
+    evidence_log="${command_block_logs[$evidence_idx]}"
+    evidence_observed="${command_block_observed[$evidence_idx]}"
+
+    if ! is_valid_exit_code_value "$evidence_exit"; then
+      findings+=("invalid exit code in evidence command block: $expected_cmd")
+      findings_count=$((findings_count + 1))
+      missing_command_block_fields=$((missing_command_block_fields + 1))
+    fi
+    if [[ -z "$evidence_log" ]]; then
+      findings+=("missing log path in evidence command block: $expected_cmd")
+      findings_count=$((findings_count + 1))
+      missing_command_block_fields=$((missing_command_block_fields + 1))
+    elif ! is_workspace_scoped_path "$evidence_log"; then
+      findings+=("evidence command log path must resolve under /workspace: $evidence_log")
+      findings_count=$((findings_count + 1))
+      missing_command_block_fields=$((missing_command_block_fields + 1))
+    elif ! path_exists_in_workspace "$evidence_log"; then
+      findings+=("evidence command log missing: $evidence_log")
+      findings_count=$((findings_count + 1))
+      missing_command_block_fields=$((missing_command_block_fields + 1))
+    fi
+    if [[ -z "$evidence_observed" ]]; then
+      findings+=("missing observed summary in evidence command block: $expected_cmd")
+      findings_count=$((findings_count + 1))
+      missing_command_block_fields=$((missing_command_block_fields + 1))
+    fi
+  done
+
+  local g6_targeted=0
+  local gate_target
+  for gate_target in "${gate_targets[@]}"; do
+    if [[ "$gate_target" == "G6" ]]; then
+      g6_targeted=1
+      break
+    fi
+  done
+
+  local require_rgb
+  require_rgb="$(jq -r '.credibility_checks.G6.require_rgb // false' "$profile_file")"
+  if [[ "$g6_targeted" -eq 1 && "$require_rgb" == "true" ]]; then
+    local red_command green_command blue_command red_exit green_exit blue_exit red_log green_log blue_log
+    red_command="$(extract_result_text_for_key "$result_body" "Red Command")"
+    green_command="$(extract_result_text_for_key "$result_body" "Green Command")"
+    blue_command="$(extract_result_text_for_key "$result_body" "Blue Command")"
+    red_exit="$(extract_result_value_for_key "$result_body" "Red Exit" '-?[0-9]+')"
+    green_exit="$(extract_result_value_for_key "$result_body" "Green Exit" '-?[0-9]+')"
+    blue_exit="$(extract_result_value_for_key "$result_body" "Blue Exit" '-?[0-9]+')"
+    red_log="$(extract_result_text_for_key "$result_body" "Red Log")"
+    green_log="$(extract_result_text_for_key "$result_body" "Green Log")"
+    blue_log="$(extract_result_text_for_key "$result_body" "Blue Log")"
+
+    if [[ -z "$red_command" || -z "$green_command" || -z "$blue_command" ]]; then
+      findings+=("missing RGB command entries (Red/Green/Blue Command)")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+
+    if ! is_valid_exit_code_value "$red_exit" || [[ "$red_exit" == "0" ]]; then
+      findings+=("invalid RGB credibility: Red Exit must be non-zero")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+    if ! is_valid_exit_code_value "$green_exit" || [[ "$green_exit" != "0" ]]; then
+      findings+=("invalid RGB credibility: Green Exit must be 0")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+    if ! is_valid_exit_code_value "$blue_exit" || [[ "$blue_exit" != "0" ]]; then
+      findings+=("invalid RGB credibility: Blue Exit must be 0")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+
+    local rgb_log
+    for rgb_log in "$red_log" "$green_log" "$blue_log"; do
+      if [[ -z "$rgb_log" ]]; then
+        findings+=("missing RGB log entry")
+        findings_count=$((findings_count + 1))
+        missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+        continue
+      fi
+      if ! is_workspace_scoped_path "$rgb_log"; then
+        findings+=("RGB log path must resolve under /workspace: $rgb_log")
+        findings_count=$((findings_count + 1))
+        missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+        continue
+      fi
+      if ! path_exists_in_workspace "$rgb_log"; then
+        findings+=("RGB log artifact missing: $rgb_log")
+        findings_count=$((findings_count + 1))
+        missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+      fi
+    done
+
+    local red_pattern green_pattern blue_pattern
+    red_pattern="$(jq -r '.credibility_checks.G6.red_command_pattern // ""' "$profile_file")"
+    green_pattern="$(jq -r '.credibility_checks.G6.green_command_pattern // ""' "$profile_file")"
+    blue_pattern="$(jq -r '.credibility_checks.G6.blue_command_pattern // ""' "$profile_file")"
+
+    if [[ -n "$red_pattern" && -n "$red_command" ]] && ! printf '%s' "$red_command" | grep -Eq -- "$red_pattern"; then
+      findings+=("Red Command does not match required pattern: $red_pattern")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+    if [[ -n "$green_pattern" && -n "$green_command" ]] && ! printf '%s' "$green_command" | grep -Eq -- "$green_pattern"; then
+      findings+=("Green Command does not match required pattern: $green_pattern")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+    if [[ -n "$blue_pattern" && -n "$blue_command" ]] && ! printf '%s' "$blue_command" | grep -Eq -- "$blue_pattern"; then
+      findings+=("Blue Command does not match required pattern: $blue_pattern")
+      findings_count=$((findings_count + 1))
+      missing_rgb_credibility_evidence=$((missing_rgb_credibility_evidence + 1))
+    fi
+  fi
 
   local requirement_ids_json gate_targets_json findings_json
   requirement_ids_json="$(json_array_from_values "${requirement_ids[@]}")"
@@ -1904,6 +2639,11 @@ benchmark_verify_task_file() {
     --argjson missing_requirement_status_entries "$missing_requirement_status_entries" \
     --argjson missing_gate_status_entries "$missing_gate_status_entries" \
     --argjson missing_required_command_evidence "$missing_required_command_evidence" \
+    --argjson missing_command_block_evidence "$missing_command_block_evidence" \
+    --argjson missing_command_block_fields "$missing_command_block_fields" \
+    --argjson missing_required_artifact_evidence "$missing_required_artifact_evidence" \
+    --argjson missing_rgb_credibility_evidence "$missing_rgb_credibility_evidence" \
+    --argjson command_block_count "$command_block_count" \
     --argjson findings_count "$findings_count" \
     --argjson data_valid "$data_valid" \
     '{
@@ -1916,6 +2656,11 @@ benchmark_verify_task_file() {
       missing_requirement_status_entries: $missing_requirement_status_entries,
       missing_gate_status_entries: $missing_gate_status_entries,
       missing_required_command_evidence: $missing_required_command_evidence,
+      missing_command_block_evidence: $missing_command_block_evidence,
+      missing_command_block_fields: $missing_command_block_fields,
+      missing_required_artifact_evidence: $missing_required_artifact_evidence,
+      missing_rgb_credibility_evidence: $missing_rgb_credibility_evidence,
+      command_block_count: $command_block_count,
       findings_count: $findings_count,
       findings: $findings,
       data_valid: $data_valid
@@ -1926,7 +2671,7 @@ benchmark_verify_task_file() {
   else
     echo "benchmark-verify: task_file=$task_file"
     echo "benchmark-verify: profile_file=$profile_file"
-    echo "benchmark-verify: requirement_ids=${#requirement_ids[@]} gate_targets=${#gate_targets[@]} findings=$findings_count"
+    echo "benchmark-verify: requirement_ids=${#requirement_ids[@]} gate_targets=${#gate_targets[@]} command_blocks=$command_block_count findings=$findings_count"
     if (( findings_count > 0 )); then
       local finding
       for finding in "${findings[@]}"; do
@@ -1939,6 +2684,102 @@ benchmark_verify_task_file() {
     return 1
   fi
   return 0
+}
+
+benchmark_rerun_task_file() {
+  local task_file="$1"
+  local agent="$2"
+  require_command jq
+
+  [[ -f "$task_file" ]] || {
+    echo "benchmark-rerun failed: task file not found: $task_file" >&2
+    return 1
+  }
+  require_agent "$agent"
+
+  local workdir
+  workdir="$(task_benchmark_workdir_path "$task_file")" || return 1
+
+  local summary_json_path
+  summary_json_path="$(task_benchmark_rerun_summary_path "$task_file" "$agent")" || return 1
+  local summary_dir
+  summary_dir="$(dirname "$summary_json_path")"
+  mkdir -p "$summary_dir"
+
+  local log_dir="${summary_json_path%.json}"
+  if [[ "$log_dir" == "$summary_json_path" ]]; then
+    log_dir="${summary_json_path}.logs"
+  fi
+  mkdir -p "$log_dir"
+
+  local -a rerun_commands=()
+  while IFS= read -r cmd; do
+    [[ -n "$cmd" ]] || continue
+    rerun_commands+=("$cmd")
+  done < <(task_benchmark_required_rerun_commands "$task_file")
+
+  if (( ${#rerun_commands[@]} == 0 )); then
+    echo "benchmark-rerun failed: no required rerun commands configured for task: $task_file" >&2
+    return 1
+  fi
+
+  local all_pass=true
+  local command_results='[]'
+  local i rerun_cmd log_file rc
+  for i in "${!rerun_commands[@]}"; do
+    rerun_cmd="${rerun_commands[$i]}"
+    log_file="$log_dir/cmd_$(printf '%03d' "$i").log"
+
+    set +e
+    (
+      cd "$workdir"
+      bash -lc "$rerun_cmd"
+    ) >"$log_file" 2>&1
+    rc=$?
+    set -e
+
+    if [[ "$rc" -ne 0 ]]; then
+      all_pass=false
+    fi
+
+    command_results="$(jq -cn \
+      --argjson base "$command_results" \
+      --arg command "$rerun_cmd" \
+      --argjson exit "$rc" \
+      --arg log "$log_file" \
+      '$base + [{command: $command, exit: $exit, log: $log}]')"
+  done
+
+  local task_id
+  task_id="$(field_value "$task_file" "id")"
+  [[ -n "$task_id" ]] || task_id="$(basename "$task_file" .md)"
+
+  jq -cn \
+    --arg generated_at "$(now)" \
+    --arg task_id "$task_id" \
+    --arg task_file "$task_file" \
+    --arg agent "$agent" \
+    --arg workdir "$workdir" \
+    --argjson commands "$command_results" \
+    --argjson all_pass "$all_pass" \
+    '{
+      generated_at: $generated_at,
+      task_id: $task_id,
+      task_file: $task_file,
+      agent: $agent,
+      workdir: $workdir,
+      all_pass: $all_pass,
+      commands: $commands
+    }' >"$summary_json_path"
+
+  if [[ "$all_pass" == "true" ]]; then
+    echo "benchmark-rerun passed: summary=$summary_json_path"
+    return 0
+  fi
+
+  echo "benchmark-rerun failed: summary=$summary_json_path" >&2
+  jq -r '.commands[]? | select(.exit != 0) | "failed command: \(.command) (exit=\(.exit), log=\(.log))"' "$summary_json_path" >&2 || true
+  return 1
 }
 
 benchmark_score_task_file() {
@@ -2014,7 +2855,7 @@ benchmark_score_task_file() {
   local unverifiable_count missing_requirement_count weak_evidence_count
   unverifiable_count="$(printf '%s' "$verify_json" | jq -r '.requirement_statuses | to_entries | map(select(.value == "Unverifiable")) | length')"
   missing_requirement_count="$(printf '%s' "$verify_json" | jq -r '.requirement_statuses | to_entries | map(select(.value == "Missing")) | length')"
-  weak_evidence_count="$(printf '%s' "$verify_json" | jq -r '.missing_requirement_status_entries + .missing_gate_status_entries + .missing_required_command_evidence')"
+  weak_evidence_count="$(printf '%s' "$verify_json" | jq -r '.missing_requirement_status_entries + .missing_gate_status_entries + .missing_required_command_evidence + .missing_command_block_evidence + .missing_command_block_fields + .missing_required_artifact_evidence + .missing_rgb_credibility_evidence')"
 
   local conservative_penalty
   conservative_penalty="$(awk -v u="$unverifiable_count" -v m="$missing_requirement_count" -v w="$weak_evidence_count" -v verify_rc="$verify_rc" '
@@ -2158,7 +2999,24 @@ benchmark_score_task_file() {
 
 benchmark_closeout_check_task_file() {
   local task_file="$1"
+  local agent="${2:-coordinator}"
   require_command jq
+
+  local profile_file
+  profile_file="$(task_benchmark_profile_path "$task_file")"
+  [[ -f "$profile_file" ]] || {
+    echo "benchmark-closeout-check failed: profile file not found: $profile_file" >&2
+    return 1
+  }
+
+  local require_independent_rerun
+  require_independent_rerun="$(jq -r '.closeout.require_independent_rerun // true' "$profile_file")"
+  if [[ "$require_independent_rerun" == "true" ]]; then
+    if ! benchmark_rerun_task_file "$task_file" "$agent" >/dev/null; then
+      echo "benchmark-closeout-check failed: independent rerun failed (agent=$agent)" >&2
+      return 1
+    fi
+  fi
 
   benchmark_score_task_file "$task_file" >/dev/null
 
@@ -2176,13 +3034,159 @@ benchmark_closeout_check_task_file() {
   all_target_gates_pass="$(jq -r '.closeout.all_target_gates_pass' "$scorecard_json_path")"
   require_all_gates_pass="$(jq -r '.closeout.require_all_gates_pass' "$scorecard_json_path")"
 
+  if [[ "$require_independent_rerun" == "true" ]]; then
+    local rerun_summary_path rerun_all_pass
+    rerun_summary_path="$(task_benchmark_rerun_summary_path "$task_file" "$agent")"
+    [[ -f "$rerun_summary_path" ]] || {
+      echo "benchmark-closeout-check failed: rerun summary missing: $rerun_summary_path" >&2
+      return 1
+    }
+    rerun_all_pass="$(jq -r '.all_pass' "$rerun_summary_path")"
+    if [[ "$rerun_all_pass" != "true" ]]; then
+      echo "benchmark-closeout-check failed: rerun summary indicates failed commands: $rerun_summary_path" >&2
+      jq -r '.commands[]? | select(.exit != 0) | "rerun failure: \(.command) (exit=\(.exit), log=\(.log))"' "$rerun_summary_path"
+      return 1
+    fi
+  fi
+
   if [[ "$ready" != "true" ]]; then
     echo "benchmark-closeout-check failed: final_total=$final_total min_score=$min_score require_all_gates_pass=$require_all_gates_pass all_target_gates_pass=$all_target_gates_pass"
     jq -r '.findings[]? | "finding: " + .' "$scorecard_json_path"
     return 1
   fi
 
-  echo "benchmark-closeout-check passed: final_total=$final_total min_score=$min_score all_target_gates_pass=$all_target_gates_pass"
+  echo "benchmark-closeout-check passed: final_total=$final_total min_score=$min_score all_target_gates_pass=$all_target_gates_pass require_independent_rerun=$require_independent_rerun"
+}
+
+benchmark_audit_chain_task_file() {
+  local task_file="$1"
+
+  [[ -f "$task_file" ]] || {
+    echo "benchmark-audit-chain failed: task file not found: $task_file" >&2
+    return 1
+  }
+
+  local root_task_id
+  root_task_id="$(field_value "$task_file" "id")"
+  [[ -n "$root_task_id" ]] || root_task_id="$(basename "$task_file" .md)"
+
+  local root_has_benchmark=0
+  if task_has_benchmark_profile "$task_file"; then
+    root_has_benchmark=1
+  fi
+
+  local -a queue_ids=("$root_task_id")
+  local -a chain_files=("$task_file")
+  local -a seen_task_ids=("$root_task_id")
+
+  while (( ${#queue_ids[@]} > 0 )); do
+    local parent_id="${queue_ids[0]}"
+    queue_ids=("${queue_ids[@]:1}")
+
+    local candidate_file
+    while IFS= read -r candidate_file; do
+      [[ -n "$candidate_file" ]] || continue
+
+      local candidate_parent
+      candidate_parent="$(task_parent_id_value "$candidate_file" 2>/dev/null || true)"
+      if [[ "$candidate_parent" != "$parent_id" ]]; then
+        continue
+      fi
+
+      append_unique_array_value chain_files "$candidate_file"
+      local candidate_id
+      candidate_id="$(field_value "$candidate_file" "id")"
+      [[ -n "$candidate_id" ]] || candidate_id="$(basename "$candidate_file" .md)"
+      local already_seen=0
+      local seen_id
+      for seen_id in "${seen_task_ids[@]}"; do
+        if [[ "$seen_id" == "$candidate_id" ]]; then
+          already_seen=1
+          break
+        fi
+      done
+      if [[ "$already_seen" -eq 0 ]]; then
+        seen_task_ids+=("$candidate_id")
+        queue_ids+=("$candidate_id")
+      fi
+    done < <(find "$ROOT" -type f -name '*.md' \
+      ! -path "$ROOT/examples/*" \
+      ! -path "$ROOT/templates/*" \
+      ! -path "$ROOT/roles/*" \
+      ! -path "$ROOT/reports/*")
+  done
+
+  local -a findings=()
+  local has_execute=0
+  local has_review=0
+  local has_closeout=0
+  local has_child_benchmark=0
+
+  local chain_task_file
+  for chain_task_file in "${chain_files[@]}"; do
+    if ! verify_task_path_status_consistency "$chain_task_file"; then
+      findings+=("path/status mismatch: $chain_task_file")
+      continue
+    fi
+
+    local chain_phase
+    chain_phase="$(task_phase_value "$chain_task_file" 2>/dev/null || true)"
+    case "$chain_phase" in
+      execute) has_execute=1 ;;
+      review) has_review=1 ;;
+      closeout) has_closeout=1 ;;
+    esac
+
+    if [[ "$chain_phase" == "execute" || "$chain_phase" == "review" || "$chain_phase" == "closeout" ]]; then
+      local req_count=0
+      local ev_count=0
+      while IFS= read -r _; do
+        req_count=$((req_count + 1))
+      done < <(task_yaml_array_values "$chain_task_file" "requirement_ids" 2>/dev/null || true)
+      while IFS= read -r _; do
+        ev_count=$((ev_count + 1))
+      done < <(task_yaml_array_values "$chain_task_file" "evidence_commands" 2>/dev/null || true)
+
+      if [[ "$req_count" -eq 0 ]]; then
+        findings+=("missing requirement_ids for strict phase task: $chain_task_file")
+      fi
+      if [[ "$ev_count" -eq 0 ]]; then
+        findings+=("missing evidence_commands for strict phase task: $chain_task_file")
+      fi
+    fi
+
+    if task_has_benchmark_profile "$chain_task_file"; then
+      if [[ "$chain_task_file" != "$task_file" ]]; then
+        has_child_benchmark=1
+      fi
+      if ! benchmark_verify_task_file "$chain_task_file" >/dev/null; then
+        findings+=("benchmark evidence contract failed: $chain_task_file")
+      fi
+    fi
+  done
+
+  if [[ "$root_has_benchmark" -eq 1 && "$has_child_benchmark" -eq 0 ]]; then
+    findings+=("benchmark root has no benchmark-configured child tasks")
+  fi
+  if [[ "$has_execute" -eq 0 ]]; then
+    findings+=("no execute-phase task found in chain")
+  fi
+  if [[ "$has_review" -eq 0 ]]; then
+    findings+=("no review-phase task found in chain")
+  fi
+  if [[ "$has_closeout" -eq 0 ]]; then
+    findings+=("no closeout-phase task found in chain")
+  fi
+
+  if (( ${#findings[@]} > 0 )); then
+    local finding
+    for finding in "${findings[@]}"; do
+      echo "benchmark-audit-chain finding: $finding"
+    done
+    return 1
+  fi
+
+  echo "benchmark-audit-chain passed: root_task_id=$root_task_id tasks_scanned=${#chain_files[@]}"
 }
 
 resolve_task_for_benchmark_commands() {
@@ -2190,6 +3194,7 @@ resolve_task_for_benchmark_commands() {
   local task_id="$2"
   local in_progress_task="$ROOT/in_progress/$agent/${task_id}.md"
   if [[ -f "$in_progress_task" ]]; then
+    verify_task_path_status_consistency "$in_progress_task" || return 1
     printf '%s' "$in_progress_task"
     return 0
   fi
@@ -2197,6 +3202,7 @@ resolve_task_for_benchmark_commands() {
   local existing
   existing="$(find_existing_task "$task_id")"
   if [[ -n "$existing" ]]; then
+    verify_task_path_status_consistency "$existing" || return 1
     printf '%s' "$existing"
     return 0
   fi
@@ -2217,6 +3223,24 @@ create_task() {
   local -a requested_targets=("$@")
   local -a explicit_write_targets=()
   local -a write_targets=()
+  local benchmark_profile_value="none"
+  local benchmark_workdir_value="."
+  local scorecard_artifact_value="none"
+  local benchmark_opt_out_reason_value="none"
+  local -a gate_targets_value=()
+  local parent_task_file=""
+  local benchmark_parent_task_file=""
+  local parent_has_benchmark=0
+  local parent_benchmark_profile="none"
+  local parent_benchmark_workdir="."
+  local parent_scorecard_artifact="none"
+  local parent_opt_out_reason="none"
+  local -a parent_gate_targets=()
+  local explicit_profile=0
+  local explicit_workdir=0
+  local explicit_scorecard=0
+  local explicit_opt_out_reason=0
+  local explicit_gate_targets=0
 
   require_task_id "$task_id"
   require_agent "$owner"
@@ -2232,6 +3256,141 @@ create_task() {
       [[ -n "$target" ]] || continue
       explicit_write_targets+=("$target")
     done < <(canonicalize_write_targets "${requested_targets[@]}")
+  fi
+
+  if [[ -n "$parent_task_id" ]]; then
+    require_task_id "$parent_task_id"
+    parent_task_file="$(find_existing_task "$parent_task_id" || true)"
+    if [[ -n "$parent_task_file" ]]; then
+      if task_has_benchmark_profile "$parent_task_file"; then
+        benchmark_parent_task_file="$parent_task_file"
+      else
+        benchmark_parent_task_file="$(task_nearest_benchmark_ancestor_file "$parent_task_file" 2>/dev/null || true)"
+      fi
+
+      if [[ -n "$benchmark_parent_task_file" ]]; then
+        parent_has_benchmark=1
+      fi
+
+      if [[ "$parent_has_benchmark" -eq 1 ]]; then
+        parent_benchmark_profile="$(task_yaml_scalar_value "$benchmark_parent_task_file" "benchmark_profile" 2>/dev/null || true)"
+      fi
+      parent_benchmark_profile="$(normalize_benchmark_scalar "$parent_benchmark_profile")"
+
+      if [[ "$parent_has_benchmark" -eq 1 ]]; then
+        parent_benchmark_workdir="$(task_yaml_scalar_value "$benchmark_parent_task_file" "benchmark_workdir" 2>/dev/null || true)"
+      fi
+      parent_benchmark_workdir="$(printf '%s' "$parent_benchmark_workdir" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+      [[ -n "$parent_benchmark_workdir" ]] || parent_benchmark_workdir="."
+
+      if [[ "$parent_has_benchmark" -eq 1 ]]; then
+        parent_scorecard_artifact="$(task_yaml_scalar_value "$benchmark_parent_task_file" "scorecard_artifact" 2>/dev/null || true)"
+      fi
+      parent_scorecard_artifact="$(normalize_benchmark_scalar "$parent_scorecard_artifact")"
+
+      if [[ "$parent_has_benchmark" -eq 1 ]]; then
+        parent_opt_out_reason="$(task_yaml_scalar_value "$benchmark_parent_task_file" "benchmark_opt_out_reason" 2>/dev/null || true)"
+      fi
+      parent_opt_out_reason="$(printf '%s' "$parent_opt_out_reason" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+      [[ -n "$parent_opt_out_reason" ]] || parent_opt_out_reason="none"
+
+      if [[ "$parent_has_benchmark" -eq 1 ]]; then
+        while IFS= read -r gate_target; do
+          [[ -n "$gate_target" ]] || continue
+          append_unique_array_value parent_gate_targets "$gate_target"
+        done < <(task_yaml_array_values "$benchmark_parent_task_file" "gate_targets" 2>/dev/null || true)
+      fi
+    fi
+  fi
+
+  if [[ -n "$CREATE_BENCHMARK_PROFILE_OVERRIDE" ]]; then
+    benchmark_profile_value="$(normalize_benchmark_scalar "$CREATE_BENCHMARK_PROFILE_OVERRIDE")"
+    explicit_profile=1
+  fi
+  if [[ -n "$CREATE_BENCHMARK_WORKDIR_OVERRIDE" ]]; then
+    benchmark_workdir_value="$(printf '%s' "$CREATE_BENCHMARK_WORKDIR_OVERRIDE" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+    [[ -n "$benchmark_workdir_value" ]] || benchmark_workdir_value="."
+    explicit_workdir=1
+  fi
+  if [[ -n "$CREATE_BENCHMARK_SCORECARD_OVERRIDE" ]]; then
+    scorecard_artifact_value="$(normalize_benchmark_scalar "$CREATE_BENCHMARK_SCORECARD_OVERRIDE")"
+    explicit_scorecard=1
+  fi
+  if [[ -n "$CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE" ]]; then
+    benchmark_opt_out_reason_value="$(printf '%s' "$CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE" | sed -E "s/^'+|'+$//g; s/^[[:space:]]+//; s/[[:space:]]+$//")"
+    if [[ -z "$benchmark_opt_out_reason_value" ]]; then
+      benchmark_opt_out_reason_value="none"
+    fi
+    explicit_opt_out_reason=1
+  fi
+  if (( ${#CREATE_BENCHMARK_GATE_TARGET_OVERRIDES[@]} > 0 )); then
+    gate_targets_value=()
+    while IFS= read -r gate_target; do
+      [[ -n "$gate_target" ]] || continue
+      append_unique_array_value gate_targets_value "$gate_target"
+    done < <(printf '%s\n' "${CREATE_BENCHMARK_GATE_TARGET_OVERRIDES[@]}")
+    explicit_gate_targets=1
+  fi
+
+  if [[ "$CREATE_BENCHMARK_INHERIT_PARENT" -eq 1 && "$parent_has_benchmark" -eq 1 ]]; then
+    if [[ "$explicit_profile" -eq 0 ]]; then
+      benchmark_profile_value="$parent_benchmark_profile"
+    fi
+    if [[ "$explicit_workdir" -eq 0 ]]; then
+      benchmark_workdir_value="$parent_benchmark_workdir"
+    fi
+    if [[ "$explicit_scorecard" -eq 0 ]]; then
+      scorecard_artifact_value="$parent_scorecard_artifact"
+    fi
+    if [[ "$explicit_opt_out_reason" -eq 0 ]]; then
+      benchmark_opt_out_reason_value="$parent_opt_out_reason"
+    fi
+    if [[ "$explicit_gate_targets" -eq 0 && ${#parent_gate_targets[@]} -gt 0 ]]; then
+      gate_targets_value=("${parent_gate_targets[@]}")
+    fi
+  fi
+
+  benchmark_profile_value="$(normalize_benchmark_scalar "$benchmark_profile_value")"
+  scorecard_artifact_value="$(normalize_benchmark_scalar "$scorecard_artifact_value")"
+  if [[ -z "$benchmark_opt_out_reason_value" || "$benchmark_opt_out_reason_value" == "null" ]]; then
+    benchmark_opt_out_reason_value="none"
+  fi
+
+  if [[ "$benchmark_profile_value" != "none" ]]; then
+    local profile_path
+    profile_path="$(resolve_benchmark_profile_path_from_value "$benchmark_profile_value")" || exit 1
+
+    if (( ${#gate_targets_value[@]} == 0 )); then
+      while IFS= read -r gate_target; do
+        [[ -n "$gate_target" ]] || continue
+        append_unique_array_value gate_targets_value "$gate_target"
+      done < <(benchmark_gate_targets_for_profile "$profile_path")
+    fi
+
+    if [[ "$scorecard_artifact_value" == "none" ]]; then
+      scorecard_artifact_value="$(default_scorecard_artifact_for_task "$owner" "$task_id")"
+    fi
+    if [[ -z "$benchmark_workdir_value" || "$benchmark_workdir_value" == "none" ]]; then
+      benchmark_workdir_value="."
+    fi
+  else
+    benchmark_workdir_value="."
+    gate_targets_value=()
+    scorecard_artifact_value="none"
+  fi
+
+  case "$phase" in
+    execute|review|closeout)
+      if [[ "$parent_has_benchmark" -eq 1 && "$benchmark_profile_value" == "none" && "$benchmark_opt_out_reason_value" == "none" ]]; then
+        echo "benchmark metadata required for benchmark-parent strict phases (phase=$phase parent_task_id=$parent_task_id); set --benchmark-profile or pass --benchmark-opt-out-reason" >&2
+        exit 1
+      fi
+      ;;
+  esac
+
+  if [[ "$benchmark_profile_value" != "none" && "$benchmark_opt_out_reason_value" != "none" ]]; then
+    echo "benchmark_opt_out_reason cannot be set when benchmark_profile is active (task_id=$task_id)" >&2
+    exit 1
   fi
 
   validate_write_target_requirement "$owner" "${explicit_write_targets[@]}"
@@ -2275,8 +3434,10 @@ create_task() {
   grep -qE '^evidence_commands:' "$out" || set_field "$out" "evidence_commands" "[]"
   grep -qE '^evidence_artifacts:' "$out" || set_field "$out" "evidence_artifacts" "[]"
   grep -qE '^benchmark_profile:' "$out" || set_field "$out" "benchmark_profile" "none"
+  grep -qE '^benchmark_workdir:' "$out" || set_field "$out" "benchmark_workdir" "."
   grep -qE '^gate_targets:' "$out" || set_field "$out" "gate_targets" "[]"
   grep -qE '^scorecard_artifact:' "$out" || set_field "$out" "scorecard_artifact" "none"
+  grep -qE '^benchmark_opt_out_reason:' "$out" || set_field "$out" "benchmark_opt_out_reason" "none"
   set_field "$out" "created_at" "$(now)"
   set_field "$out" "updated_at" "$(now)"
 
@@ -2287,6 +3448,24 @@ create_task() {
   else
     set_field "$out" "parent_task_id" "none"
     set_field "$out" "depends_on" "[]"
+  fi
+
+  if [[ "$benchmark_profile_value" == "none" ]]; then
+    set_field "$out" "benchmark_profile" "none"
+  else
+    set_field "$out" "benchmark_profile" "$(yaml_quote_single "$benchmark_profile_value")"
+  fi
+  set_field "$out" "benchmark_workdir" "$(yaml_quote_single "$benchmark_workdir_value")"
+  set_field "$out" "gate_targets" "$(yaml_inline_list "${gate_targets_value[@]}")"
+  if [[ "$scorecard_artifact_value" == "none" ]]; then
+    set_field "$out" "scorecard_artifact" "none"
+  else
+    set_field "$out" "scorecard_artifact" "$(yaml_quote_single "$scorecard_artifact_value")"
+  fi
+  if [[ "$benchmark_opt_out_reason_value" == "none" ]]; then
+    set_field "$out" "benchmark_opt_out_reason" "none"
+  else
+    set_field "$out" "benchmark_opt_out_reason" "$(yaml_quote_single "$benchmark_opt_out_reason_value")"
   fi
 
   if (( ${#write_targets[@]} > 0 )); then
@@ -2427,6 +3606,7 @@ transition_task() {
 
   local src="$ROOT/in_progress/$agent/${task_id}.md"
   [[ -f "$src" ]] || { echo "task not in progress for $agent: $src" >&2; exit 1; }
+  verify_task_path_status_consistency "$src" || exit 1
 
   if [[ "$action" == "done" ]]; then
     verify_task_done_in_progress "$agent" "$task_id" "$note" || exit 1
@@ -2487,6 +3667,7 @@ main() {
   case "$cmd" in
     create)
       [[ $# -ge 3 ]] || { usage; exit 1; }
+      reset_create_benchmark_overrides
       local task_id="$2"
       local title="$3"
       local owner="$DEFAULT_OWNER_AGENT"
@@ -2527,6 +3708,30 @@ main() {
             set_coding_owner_lanes_override "${2:-}"
             shift 2
             ;;
+          --benchmark-profile)
+            CREATE_BENCHMARK_PROFILE_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --benchmark-workdir)
+            CREATE_BENCHMARK_WORKDIR_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --gate-target)
+            append_unique_create_gate_target_override "${2:-}"
+            shift 2
+            ;;
+          --scorecard-artifact)
+            CREATE_BENCHMARK_SCORECARD_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --benchmark-opt-out-reason)
+            CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --no-benchmark-inherit)
+            CREATE_BENCHMARK_INHERIT_PARENT=0
+            shift
+            ;;
           *)
             echo "unknown arg: $1" >&2
             usage
@@ -2539,6 +3744,7 @@ main() {
       ;;
     delegate)
       [[ $# -ge 5 ]] || { usage; exit 1; }
+      reset_create_benchmark_overrides
       local from_agent="$2"
       local to_agent="$3"
       local task_id="$4"
@@ -2570,6 +3776,30 @@ main() {
           --coding-owner-lanes)
             set_coding_owner_lanes_override "${2:-}"
             shift 2
+            ;;
+          --benchmark-profile)
+            CREATE_BENCHMARK_PROFILE_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --benchmark-workdir)
+            CREATE_BENCHMARK_WORKDIR_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --gate-target)
+            append_unique_create_gate_target_override "${2:-}"
+            shift 2
+            ;;
+          --scorecard-artifact)
+            CREATE_BENCHMARK_SCORECARD_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --benchmark-opt-out-reason)
+            CREATE_BENCHMARK_OPT_OUT_REASON_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+          --no-benchmark-inherit)
+            CREATE_BENCHMARK_INHERIT_PARENT=0
+            shift
             ;;
           *)
             echo "unknown arg: $1" >&2
@@ -2658,6 +3888,12 @@ main() {
       benchmark_task_file="$(resolve_task_for_benchmark_commands "$agent" "$task_id")" || exit 1
       benchmark_verify_task_file "$benchmark_task_file" "$output_mode"
       ;;
+    benchmark-rerun)
+      [[ $# -eq 3 ]] || { usage; exit 1; }
+      local benchmark_task_file
+      benchmark_task_file="$(resolve_task_for_benchmark_commands "$2" "$3")" || exit 1
+      benchmark_rerun_task_file "$benchmark_task_file" "$2"
+      ;;
     benchmark-score)
       [[ $# -eq 3 ]] || { usage; exit 1; }
       local benchmark_task_file
@@ -2668,7 +3904,13 @@ main() {
       [[ $# -eq 3 ]] || { usage; exit 1; }
       local benchmark_task_file
       benchmark_task_file="$(resolve_task_for_benchmark_commands "$2" "$3")" || exit 1
-      benchmark_closeout_check_task_file "$benchmark_task_file"
+      benchmark_closeout_check_task_file "$benchmark_task_file" "$2"
+      ;;
+    benchmark-audit-chain)
+      [[ $# -eq 3 ]] || { usage; exit 1; }
+      local benchmark_task_file
+      benchmark_task_file="$(resolve_task_for_benchmark_commands "$2" "$3")" || exit 1
+      benchmark_audit_chain_task_file "$benchmark_task_file"
       ;;
     block)
       [[ $# -ge 4 ]] || { usage; exit 1; }

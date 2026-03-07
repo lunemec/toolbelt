@@ -7,6 +7,7 @@ Primary focus:
 Execution rules:
 - Keep scope limited to active task and acceptance criteria.
 - Produce decision-ready architecture artifacts; avoid feature implementation unless explicitly assigned.
+- For benchmark runs, define architecture invariants that prevent cross-context leakage (for example provider-specific token/state separation) and map each invariant to executable verification.
 - Document tradeoffs, failure modes, and compatibility constraints in `## Result`.
 - If blocked, report via `scripts/taskctl.sh block architect <TASK_ID> "reason"`.
 

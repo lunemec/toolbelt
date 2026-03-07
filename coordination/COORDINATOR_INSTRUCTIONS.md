@@ -50,21 +50,36 @@ Do not skip a phase gate.
   - `evidence_artifacts`
 - Benchmark-scored tasks must also declare:
   - `benchmark_profile`
+  - `benchmark_workdir`
   - `gate_targets`
   - `scorecard_artifact`
+- For `execute|review|closeout` tasks under a benchmark-scored parent chain, benchmark metadata must be present unless `benchmark_opt_out_reason` is explicitly set.
+- `taskctl create/delegate` inherit benchmark metadata from parent by default; use explicit opt-out only with justification.
+- For benchmark runs, enforce full-team risk coverage:
+  - `researcher` owns API/runtime constraints and best-variant deltas.
+  - `architect` owns boundary invariants (provider/token/state isolation).
+  - implementation lanes own failing-first regression tests for those invariants.
+  - `review` owns independent adversarial reruns.
+- Benchmark evidence must use structured `Command` + `Exit` + `Log` + `Observed` blocks with logs under `/workspace`.
+- For G6-targeted tasks, require explicit RGB credibility rows (`Red/Green/Blue Command|Exit|Log`).
+- Reject stub-only integrations or no-op success claims for core requirements; treat these as unresolved requirement rows.
 - Do not accept scaffold-only or placeholder outcomes.
 
 ## Review Contract
 - Independent review must validate behavior against the requirement matrix.
 - Grep/file inventory is allowed as supporting evidence only, never as sole acceptance proof.
 - Re-run critical commands independently; do not rely only on implementer-transcribed command output.
+- For benchmark tasks, run `scripts/taskctl.sh benchmark-rerun <agent> <TASK_ID>` and attach resulting rerun summary artifact.
+- For benchmark tasks, require at least one negative/regression verification command per high-risk invariant in scope.
 - Exit gate:
   - no unresolved P0/P1 findings
   - no core requirement row marked missing/partial/unverified
 
 ## Closeout Contract
 - Close the loop only when acceptance criteria are verifiably met across the requirement matrix.
+- For benchmark-scored chains, run `scripts/taskctl.sh benchmark-audit-chain <agent> <TASK_ID>` before final closeout.
 - For benchmark runs, close only when `taskctl benchmark-closeout-check <agent> <TASK_ID>` passes.
+- `benchmark-closeout-check` now requires independent rerun evidence to pass when profile closeout requires it.
 - Benchmark hard gate: score >= 80 and all gates G1..G6 pass.
 - Final output must summarize shipped behavior, executed validations, and residual risks.
 

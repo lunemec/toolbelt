@@ -91,7 +91,9 @@ scripts/taskctl.sh delegate architect be TASK-1003 "Implement profile API" --pri
 scripts/taskctl.sh claim fe
 scripts/taskctl.sh verify-done fe TASK-1002
 scripts/taskctl.sh benchmark-verify coordinator TASK-2000
+scripts/taskctl.sh benchmark-rerun coordinator TASK-2000
 scripts/taskctl.sh benchmark-score coordinator TASK-2000
+scripts/taskctl.sh benchmark-audit-chain coordinator TASK-2000
 scripts/taskctl.sh benchmark-closeout-check coordinator TASK-2000
 scripts/taskctl.sh done fe TASK-1002 "UI delivered and tested"
 scripts/taskctl.sh block be TASK-1003 "Waiting on auth contract"
@@ -115,16 +117,22 @@ scripts/taskctl.sh list pm
 ### Benchmark Metadata and Commands
 - Benchmark-scored tasks should declare:
   - `benchmark_profile` (default profile: `coordination/benchmark_profiles/vault_sync_prompt_v1.json`)
+  - `benchmark_workdir` (workspace directory where independent rerun commands execute)
   - `gate_targets` (for example `['G1', 'G2', 'G3', 'G4', 'G5', 'G6']`)
   - `scorecard_artifact` (for example `coordination/reports/coordinator/benchmark_scorecard.json`)
+- `taskctl create/delegate` inherit benchmark metadata from parent tasks by default.
+- For `execute|review|closeout` tasks in a benchmark parent chain, either keep benchmark metadata populated or set `benchmark_opt_out_reason` explicitly.
 - `scripts/taskctl.sh benchmark-verify <agent> <TASK_ID>` validates benchmark evidence structure.
+- `scripts/taskctl.sh benchmark-rerun <agent> <TASK_ID>` re-runs profile-required critical commands and writes a rerun summary artifact.
 - `scripts/taskctl.sh benchmark-score <agent> <TASK_ID>` computes weighted score and writes:
   - JSON scorecard at `scorecard_artifact` (or default)
   - Markdown companion scorecard (`.md`)
+- `scripts/taskctl.sh benchmark-audit-chain <agent> <TASK_ID>` validates parent/child benchmark evidence integrity across strict phases.
 - `scripts/taskctl.sh benchmark-closeout-check <agent> <TASK_ID>` enforces benchmark release gate.
 - Benchmark hard gate defaults:
   - total score `>= 80`
   - all targeted gates marked `pass`
+  - independent rerun summary must pass when profile closeout requires rerun
 
 ### Task-Local Prompt Sidecars
 - `taskctl create` and `taskctl delegate` auto-bootstrap:
@@ -217,4 +225,4 @@ Coverage includes:
 4. Populate `requirement_ids`, `evidence_commands`, and `evidence_artifacts` for execute/review tasks.
 5. Resolve blocker report tasks before declaring clarification complete.
 6. Finalize closeout only when requirement matrix rows are fully verified.
-7. For benchmark runs, close only after `benchmark-closeout-check` passes.
+7. For benchmark runs, run `benchmark-audit-chain` and close only after `benchmark-closeout-check` passes.

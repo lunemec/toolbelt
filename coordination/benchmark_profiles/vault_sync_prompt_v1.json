@@ -97,8 +97,63 @@
       "GOCACHE=/tmp/go-build-cache GOMODCACHE=/tmp/go-mod-cache go test ./... -count=1"
     ]
   },
+  "gate_required_command_patterns": {
+    "G2": [
+      "go test .*integration.*(auth|oauth|provider|token|sync)",
+      "(vaultsync|obsidian-archiver).*(auth|sync)"
+    ],
+    "G3": [
+      "go test .*integration.*(archive|provenance|pipeline|sync)",
+      "go test .*(archive|provenance)"
+    ],
+    "G4": [
+      "go test .*(architecture|guardrail|ddd|domain)"
+    ],
+    "G5": [
+      "go test ./\\.\\.\\.",
+      "go test .*integration"
+    ],
+    "G6": [
+      "go test .* -count=1"
+    ]
+  },
+  "gate_required_artifact_patterns": {
+    "G1": [
+      ".*\\.log$"
+    ],
+    "G2": [
+      ".*\\.log$"
+    ],
+    "G3": [
+      ".*\\.log$"
+    ],
+    "G4": [
+      ".*\\.log$"
+    ],
+    "G5": [
+      ".*\\.log$"
+    ],
+    "G6": [
+      ".*(red|green|blue).*\\.log$"
+    ]
+  },
+  "credibility_checks": {
+    "G6": {
+      "require_rgb": true,
+      "red_command_pattern": "go test .*",
+      "green_command_pattern": "go test .*",
+      "blue_command_pattern": "(go test|go vet|staticcheck|golangci-lint).*"
+    }
+  },
   "closeout": {
     "min_score": 80,
-    "require_all_gates_pass": true
+    "require_all_gates_pass": true,
+    "require_independent_rerun": true,
+    "required_rerun_commands": [
+      "go version",
+      "GOCACHE=/tmp/go-build-cache GOMODCACHE=/tmp/go-mod-cache go build ./...",
+      "GOCACHE=/tmp/go-build-cache GOMODCACHE=/tmp/go-mod-cache go test ./...",
+      "GOCACHE=/tmp/go-build-cache GOMODCACHE=/tmp/go-mod-cache go test ./... -count=1"
+    ]
   }
 }

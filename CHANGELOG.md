@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 ### Added
+- New `taskctl` benchmark command: `benchmark-audit-chain`, which validates benchmark evidence integrity across parent/child strict-phase tasks.
+- New `taskctl create/delegate` benchmark options: `--benchmark-profile`, `--benchmark-workdir`, `--gate-target`, `--scorecard-artifact`, `--benchmark-opt-out-reason`, and `--no-benchmark-inherit`.
+- New `taskctl` benchmark command: `benchmark-rerun`, which independently re-executes profile-required critical commands and writes rerun summaries under `coordination/reports/<agent>/benchmark_reruns/`.
+- Benchmark profile schema extensions for strict evidence checks: `gate_required_command_patterns`, `gate_required_artifact_patterns`, and `credibility_checks.G6` (RGB credibility requirements).
 - Benchmark profile pack for vault-sync prompt scoring and gate evaluation at `coordination/benchmark_profiles/vault_sync_prompt_v1.json`.
 - Benchmark helper templates: `coordination/templates/BENCHMARK_REQUIREMENT_CHECKLIST.md`, `BENCHMARK_GATE_CHECKLIST.md`, and `BENCHMARK_SCORE_TABLE.md`.
 - New `taskctl` benchmark commands: `benchmark-verify`, `benchmark-score`, and `benchmark-closeout-check`.
@@ -35,6 +39,18 @@ All notable changes to this project are documented in this file.
 - Host-side selective mount launcher `scripts/toolbelt.sh` with opt-in Docker socket support (`--docker`) and path-to-`/workspace/<basename>` mapping.
 
 ### Changed
+- `scripts/taskctl.sh create/delegate` now inherit benchmark metadata from benchmark-configured parents by default and enforce explicit metadata (or explicit opt-out reason) for `execute|review|closeout` tasks in benchmark parent chains.
+- `scripts/taskctl.sh verify-done` now enforces benchmark ancestry requirements for strict phases, runs `benchmark-closeout-check` automatically for benchmark closeout tasks, and validates queue path/status consistency.
+- `scripts/taskctl.sh` benchmark command resolution now rejects task files whose frontmatter status disagrees with queue location.
+- `scripts/taskctl.sh benchmark-verify` now validates structured command evidence blocks (`Command` + `Exit` + `Log` + `Observed`) for benchmark tasks, enforces workspace-scoped log artifacts, evaluates pattern-based gate evidence, and applies explicit RGB credibility checks for G6.
+- `scripts/taskctl.sh verify-done` now requires structured evidence blocks for declared `evidence_commands`, including workspace-scoped existing log files and non-empty observed summaries.
+- `scripts/taskctl.sh benchmark-closeout-check` now enforces independent rerun evidence when required by benchmark profile closeout settings.
+- `coordination/templates/TASK_TEMPLATE.md` now includes `benchmark_workdir` metadata and explicit RGB evidence key format guidance for benchmark tasks.
+- `coordination/templates/TASK_TEMPLATE.md` now includes `benchmark_opt_out_reason` and benchmark-parent strict-phase guidance.
+- `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` and `coordination/COORDINATOR_INSTRUCTIONS.md` now require `benchmark_workdir`, structured benchmark evidence blocks, anti-stub/no-op enforcement, and benchmark rerun execution during review.
+- `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md`, `coordination/COORDINATOR_INSTRUCTIONS.md`, and role contracts now require full-team benchmark risk coverage (research/architectural invariants/negative-path review) and benchmark chain audit before closeout.
+- `scripts/verify_top_level_prompt_contract.sh` and `scripts/verify_coordinator_instructions_contract.sh` now assert benchmark rerun and structured-evidence clauses.
+- `coordination/README.md` and `README.md` now document `benchmark-rerun`, `benchmark_workdir`, and strict closeout rerun requirements.
 - `coordination/templates/TASK_TEMPLATE.md` now includes benchmark metadata defaults (`benchmark_profile`, `gate_targets`, `scorecard_artifact`) and stricter Result evidence guidance (`Requirement Statuses`, `Command` + `Exit` + `Log`, gate and category score sections for benchmark tasks).
 - `scripts/taskctl.sh verify-done` now enforces stricter strict-phase evidence (`requirement_ids`, per-requirement status rows, and `Log:` entries) and triggers benchmark evidence checks when a benchmark profile is configured.
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` and `coordination/COORDINATOR_INSTRUCTIONS.md` now enforce benchmark-first release rules, including conservative evidence handling, independent critical command reruns in review, and hard closeout gate (`score >= 80` + all gates pass).

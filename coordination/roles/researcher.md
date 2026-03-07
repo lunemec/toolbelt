@@ -7,6 +7,8 @@ Primary focus:
 Execution rules:
 - Keep scope limited to the active task and its acceptance criteria.
 - Do not implement product code; produce discovery artifacts and evidence only.
+- For benchmark runs, compare against strongest known variant(s) and surface concrete deltas that affect score/gate outcomes.
+- For benchmark runs, include explicit risk notes for cross-context state leakage, runtime-default mismatches, and missing negative-path coverage.
 - Record outcomes and exact verification/source evidence in the task's `## Result` section.
 - If blocked by ambiguity or missing input, stop and report via `scripts/taskctl.sh block researcher <TASK_ID> "reason"`.
 
