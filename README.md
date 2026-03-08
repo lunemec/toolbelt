@@ -38,7 +38,7 @@ On the host machine:
 1. Build the image:
 
 ```bash
-docker build -f Dockerfile.codex-dev -t codex-dev:toolbelt .
+docker build -f Dockerfile.codex-dev -t toolbelt:latest .
 ```
 
 2. Run an interactive container with your current repository, ephemeral Codex state, mounted auth/config inputs, and optional host Docker access:
@@ -51,7 +51,7 @@ docker run --rm -it \
   -v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro" \
   -v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro" \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  codex-dev:toolbelt
+  toolbelt:latest
 ```
 
 Command breakdown:
@@ -63,7 +63,7 @@ Command breakdown:
 - `-v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro"`: provide OAuth/API auth material without mounting the full host `~/.codex`.
 - `-v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro"`: provide Codex config defaults without mounting full host state.
 - `-v /var/run/docker.sock:/var/run/docker.sock`: let containerized tools talk to the host Docker daemon.
-- `codex-dev:toolbelt`: image name to run.
+- `toolbelt:latest`: image name to run.
 
 Common variants:
 - Without Docker socket mount (container cannot control host Docker):
@@ -75,7 +75,7 @@ docker run --rm -it \
   --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
   -v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro" \
   -v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro" \
-  codex-dev:toolbelt
+  toolbelt:latest
 ```
 
 - With API-key auth and no host Codex mounts:
@@ -87,7 +87,7 @@ docker run --rm -it \
   --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
   -e OPENAI_API_KEY \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  codex-dev:toolbelt
+  toolbelt:latest
 ```
 
 - Fully isolated session (no Docker socket and no host Codex mounts):
@@ -98,7 +98,7 @@ docker run --rm -it \
   -w /workspace \
   --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
   -e OPENAI_API_KEY \
-  codex-dev:toolbelt
+  toolbelt:latest
 ```
 
 If single-file mounts are unreliable in your Docker runtime, mount a temporary directory that only contains `auth.json` and `config.toml`, then point `CODEX_AUTH_JSON_SRC` and `CODEX_CONFIG_TOML_SRC` at those files.
@@ -338,25 +338,25 @@ Run these after editing `Dockerfile.codex-dev`:
 1. Build:
 
 ```bash
-docker build -f Dockerfile.codex-dev -t codex-dev:toolbelt .
+docker build -f Dockerfile.codex-dev -t toolbelt:latest .
 ```
 
 2. Check tool presence:
 
 ```bash
-docker run --rm codex-dev:toolbelt bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq codex codex-real'
+docker run --rm toolbelt:latest bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq codex codex-real'
 ```
 
 3. Runtime smoke checks:
 
 ```bash
-docker run --rm codex-dev:toolbelt bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'
+docker run --rm toolbelt:latest bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'
 ```
 
 4. GKE auth plugin presence:
 
 ```bash
-docker run --rm codex-dev:toolbelt bash -lc 'command -v gke-gcloud-auth-plugin && gke-gcloud-auth-plugin --version'
+docker run --rm toolbelt:latest bash -lc 'command -v gke-gcloud-auth-plugin && gke-gcloud-auth-plugin --version'
 ```
 
 ## Repository Layout

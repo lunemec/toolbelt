@@ -63,7 +63,7 @@ All notable changes to this project are documented in this file.
 - `scripts/verify_orchestrator_clarification_suite.sh` now includes benchmark contract validation.
 - `coordination/README.md` and top-level `README.md` now document benchmark task metadata and benchmark scoring/closeout commands.
 - `AGENTS.md` now documents background agent orchestration commands and files.
-- `AGENTS.md` now enforces a fixed runtime image tag (`codex-dev:toolbelt`) and requires `README.md` updates for project changes.
+- `AGENTS.md` now enforces a fixed runtime image tag (`toolbelt:latest`) and requires `README.md` updates for project changes.
 - `scripts/taskctl.sh` now supports dynamic agents, numeric priorities, layered delegation, and creator/owner task metadata.
 - `scripts/taskctl.sh ensure-agent coordinator` now auto-creates `coordination/reports/coordinator/HANDOVER.md` when missing and regenerates coordinator role prompts with explicit handover continuity/resume/update instructions.
 - `scripts/agent_worker.sh` now validates dynamic role files and integrates with the updated task lifecycle.

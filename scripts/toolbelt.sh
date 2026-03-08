@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_IMAGE="${CODEX_DEV_IMAGE:-codex-dev:toolbelt}"
+DEFAULT_IMAGE="${CODEX_DEV_IMAGE:-toolbelt:latest}"
 DEFAULT_SHELL="${CODEX_DEV_SHELL:-bash}"
 DEFAULT_WORKDIR="/workspace"
 DEFAULT_TMPFS_SIZE="${CODEX_TOOLBELT_TMPFS_SIZE:-512m}"
@@ -28,7 +28,7 @@ Usage:
   toolbelt [options] [directory1 directory2 ...] [-- CMD...]
 
 Description:
-  Run codex-dev:toolbelt with selective mounts.
+  Run toolbelt:latest with selective mounts.
   If no directories are provided, the current directory is mounted to /workspace.
   Each provided directory/path is mounted to /workspace/<basename(path)>.
 
@@ -37,7 +37,7 @@ Options:
   -gcloud, --gcloud   Mount host gcloud config into /run/secrets/gcloud-config (read-only)
   -k8s, --k8s         Mount host kubeconfig into /run/secrets/kube-config (read-only)
   -image, --image IMAGE
-                     Container image (default: codex-dev:toolbelt)
+                     Container image (default: toolbelt:latest)
   -workdir, --workdir, -w DIR
                      Container working directory (default: /workspace)
   -shell, --shell SHELL
