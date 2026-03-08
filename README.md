@@ -322,14 +322,19 @@ Included by default:
 
 Default watcher behavior:
 - Watches `/root/.openclaw/media/inbound`
+- On startup, skips (and by default prunes) pre-existing audio files to avoid replay spam
 - Writes logs/state under `/root/.openclaw/voice`
 - Saves transcripts to `/root/.openclaw/voice/transcripts`
+- Deletes processed audio files after successful transcript save (transcripts remain)
 - Posts transcript messages to Discord when token/channel are available
 
 Default env:
 - `WHISPER_LANGUAGE=en`
 - `WHISPER_MODEL=small`
 - `WHISPER_COMPUTE_TYPE=int8`
+- `VOICE_STT_SKIP_EXISTING_ON_START=1`
+- `VOICE_STT_PRUNE_EXISTING_ON_START=1`
+- `VOICE_STT_DELETE_AFTER_TRANSCRIBE=1`
 
 ## Validation Commands (Required After Dockerfile Changes)
 

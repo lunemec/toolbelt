@@ -98,6 +98,16 @@
 4. C1 + C2 + C3
 5. B5 + D1 + D2 + D3
 
+## Epic E — Post-Launch Hardening (2026-03-08)
+
+### E1. Compose project stability
+- [x] Force explicit compose project name to prevent container-name conflicts.
+- [x] Standardize restart path to `up -d --force-recreate --no-deps`.
+
+### E2. Error transparency
+- [x] Surface docker compose stderr/stdout in command output on failures.
+- [x] Keep operator-facing guidance to avoid manual `stop` + `start` fallbacks.
+
 ## Notes
 - Keep v1 intentionally narrow: only lifecycle + remount operations.
 - Prefer explicit service names (`claw-general`, etc.) over free-form inputs.

@@ -23,6 +23,9 @@ POLL_SECONDS = float(os.getenv("POLL_SECONDS", "5"))
 MAX_MESSAGE_CHARS = int(os.getenv("VOICE_STT_MAX_MESSAGE_CHARS", "1700"))
 POST_TO_DISCORD = os.getenv("VOICE_STT_POST_DISCORD", "1") == "1"
 DISCORD_CHANNEL_ID = os.getenv("VOICE_STT_DISCORD_CHANNEL_ID", "")
+SKIP_EXISTING_ON_START = os.getenv("VOICE_STT_SKIP_EXISTING_ON_START", "1") == "1"
+PRUNE_EXISTING_ON_START = os.getenv("VOICE_STT_PRUNE_EXISTING_ON_START", "1") == "1"
+DELETE_AFTER_TRANSCRIBE = os.getenv("VOICE_STT_DELETE_AFTER_TRANSCRIBE", "1") == "1"
 
 
 def log(msg: str):
@@ -136,6 +139,45 @@ def transcribe_file(model: WhisperModel, audio_path: Path) -> str:
     return text or "(No speech detected)"
 
 
+def list_audio_files() -> list[Path]:
+    patterns = ["*.ogg", "*.mp3", "*.wav", "*.m4a", "*.webm"]
+    files = []
+    for pat in patterns:
+        files.extend(INBOUND_DIR.glob(pat))
+    return sorted(set(files), key=lambda p: p.stat().st_mtime)
+
+
+def bootstrap_existing_files(conn: sqlite3.Connection, startup_epoch: float):
+    if not SKIP_EXISTING_ON_START:
+        return
+
+    skipped = 0
+    pruned = 0
+    for path in list_audio_files():
+        try:
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if mtime > startup_epoch:
+            continue
+
+        if not already_processed(conn, path, mtime):
+            mark_processed(conn, path, mtime, "")
+            skipped += 1
+
+        if PRUNE_EXISTING_ON_START:
+            try:
+                path.unlink(missing_ok=True)
+                pruned += 1
+            except Exception as e:
+                log(f"WARN prune failed for {path.name}: {e}")
+
+    if skipped:
+        log(f"Startup skip: marked {skipped} pre-existing audio files as processed")
+    if pruned:
+        log(f"Startup cleanup: removed {pruned} pre-existing audio files")
+
+
 def main():
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -154,14 +196,13 @@ def main():
     conn = sqlite3.connect(STATE_DB)
     init_db(conn)
 
+    startup_epoch = time.time()
+    bootstrap_existing_files(conn, startup_epoch)
+
     log(f"Watching {INBOUND_DIR}")
     while True:
         try:
-            patterns = ["*.ogg", "*.mp3", "*.wav", "*.m4a", "*.webm"]
-            files = []
-            for pat in patterns:
-                files.extend(INBOUND_DIR.glob(pat))
-            files = sorted(set(files), key=lambda p: p.stat().st_mtime)
+            files = list_audio_files()
 
             for path in files:
                 mtime = path.stat().st_mtime
@@ -178,6 +219,13 @@ def main():
                     msg = f"📝 Voice transcript ({path.name}):\n{transcript}"
                     send_discord_message(token, channel_id, msg)
                 mark_processed(conn, path, mtime, transcript)
+
+                if DELETE_AFTER_TRANSCRIBE:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except Exception as e:
+                        log(f"WARN cleanup failed for {path.name}: {e}")
+
                 log(f"Done {path.name}")
 
         except Exception as e:
