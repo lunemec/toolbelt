@@ -10,7 +10,7 @@ ARG CLOUD_SDK_VERSION=516.0.0
 ARG KUBECTL_VERSION=v1.33.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  bash ca-certificates curl git docker.io python3 make g++ ffmpeg \
+  bash ca-certificates curl git docker.io docker-compose-plugin python3 make g++ ffmpeg \
   less vim nano tree tmux fzf ripgrep fd-find jq yq zip xz-utils \
   cloc sloccount hyperfine entr httpie ncdu \
   wrk apache2-utils hey wget aria2 \
@@ -130,6 +130,7 @@ RUN set -eux; \
   wrk --version || true; ab -V; hey --help | head -n 2; \
   ghz --version; grpcurl --version; wget --version; aria2c --version; \
   gcloud --version | head -n 1; command -v gke-gcloud-auth-plugin kubectl kubectx kubens; gke-gcloud-auth-plugin --version >/dev/null; kubectl version --client=true >/dev/null; \
+  docker --version; docker compose version; \
   openclaw --version; \
   /opt/voice-stt/bin/python -c 'from faster_whisper import WhisperModel; print("faster-whisper ok")'; \
   command -v voice-stt-start voice-stt-stop voice-stt-once; \
