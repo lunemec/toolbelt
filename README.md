@@ -292,8 +292,10 @@ Notes:
 - Worker reasoning policy defaults to `xhigh` for strict-delivery lanes (`pm`, `coordinator`, `planner`, `researcher`, `architect`, `be`, `review`) and `medium` for others; override with `AGENT_XHIGH_AGENTS`, `AGENT_PLANNER_REASONING_EFFORT`, and `AGENT_DEFAULT_REASONING_EFFORT` if needed (`default`/`null` aliases normalize to `none`).
 - Worker success does not auto-close tasks; `taskctl verify-done` must pass before transition to `done`.
 - Benchmark tasks now require structured evidence blocks (`Command`/`Exit`/`Log`/`Log Hash`/`Observed`) and independent rerun evidence for strict closeout.
-- `benchmark-closeout-check` now enforces review-owned reruns and rerun freshness after execute-phase updates.
+- `benchmark-closeout-check` enforces profile-configured independent reruns and rerun freshness after execute-phase updates (default profile remains review-owned).
 - Benchmark metadata now inherits from parent tasks by default on `create`/`delegate`; strict benchmark-parent execution/review/closeout tasks require benchmark metadata or explicit `benchmark_opt_out_reason`.
+- `taskctl create/delegate` now auto-runs benchmark result scaffolding when `benchmark_profile` is active.
+- Rerun summaries now include `run_nonce` plus per-command `log_hash` integrity fields.
 
 ## Safety Guards
 
@@ -306,6 +308,28 @@ This applies to:
 - `scripts/taskctl.sh`
 - `scripts/agent_worker.sh`
 - `scripts/agents_ctl.sh`
+
+## Voice STT (Whisper) Built-in
+
+The image now includes a built-in Whisper STT runtime for OpenClaw media inbox workflows.
+
+Included by default:
+- `ffmpeg`
+- Python runtime at `/opt/voice-stt` with `faster-whisper`
+- `voice-stt-start` (background watcher)
+- `voice-stt-stop`
+- `voice-stt-once <audio-file>`
+
+Default watcher behavior:
+- Watches `/root/.openclaw/media/inbound`
+- Writes logs/state under `/root/.openclaw/voice`
+- Saves transcripts to `/root/.openclaw/voice/transcripts`
+- Posts transcript messages to Discord when token/channel are available
+
+Default env:
+- `WHISPER_LANGUAGE=auto`
+- `WHISPER_MODEL=small`
+- `WHISPER_COMPUTE_TYPE=int8`
 
 ## Validation Commands (Required After Dockerfile Changes)
 
