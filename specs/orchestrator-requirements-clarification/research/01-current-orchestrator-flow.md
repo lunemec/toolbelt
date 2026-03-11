@@ -1,3 +1,5 @@
+> Archival note: This spec package records the pre-extraction in-repo coordinator model. The authoritative coordinator implementation now lives in the standalone `/workspace/coordinator` repository.
+
 # Research 01: Current Orchestrator Flow
 
 ## Objective

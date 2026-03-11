@@ -1,3 +1,5 @@
+> Archival note: This spec package records the pre-extraction in-repo coordinator model. The authoritative coordinator implementation now lives in the standalone `/workspace/coordinator` repository.
+
 Q1: What exact behavior should the top-level orchestrator follow for requirement clarification (for example: ask one question at a time, gate progress on explicit confirmation, and write updates to spec files), and what should be different from the current behavior?
 
 A1: The top-level orchestrator should behave basically exactly like ralph plan. Current behavior does not ask for detailed enough specifications, leading to suboptimal results.
@@ -40,4 +42,3 @@ A9: Completion condition accepted: clarification ends when the user explicitly c
 Q10: Are requirements clarification complete for this effort?
 
 A10: Yes, requirements clarification is complete.
-

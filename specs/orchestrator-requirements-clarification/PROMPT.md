@@ -1,3 +1,5 @@
+> Archival note: This spec package records the pre-extraction in-repo coordinator model. The authoritative coordinator implementation now lives in the standalone `/workspace/coordinator` repository.
+
 # Objective
 Implement the approved orchestration upgrade so the top-level agent clarifies requirements with ralph-plan-like rigor and continuously generates specialist tasks, while preventing cross-agent file-write race conditions using Option C locking.
 
