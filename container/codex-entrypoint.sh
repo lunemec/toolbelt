@@ -139,17 +139,18 @@ show_motd() {
   printf '    Launch Google Gemini CLI.\n'
   printf '  %b\n' "${yellow}cursor${reset}"
   printf '    Launch Cursor Agent CLI (`agent` and `cursor-agent` aliases).\n'
-  printf '  %b\n' "${yellow}codex-init-workspace --workspace /workspace${reset}"
-  printf '    Seed /workspace/scripts and /workspace/coordination from the image baseline.\n'
   printf '\n'
 
-  printf '%b\n' "${bold}${cyan}Coordination quickstart${reset}"
-  printf '  %b\n' "${yellow}scripts/coordination_repair.sh${reset}"
-  printf '    Repair missing coordination files after bootstrap.\n'
-  printf '  %b\n' "${yellow}scripts/agents_ctl.sh start${reset}"
-  printf '    Start background specialist workers.\n'
-  printf '  %b\n' "${yellow}codex \"\$(cat /workspace/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md)\"${reset}"
-  printf '    Launch Codex with the top-level orchestrator prompt.\n'
+  printf '%b\n' "${bold}${cyan}Coordinator${reset}"
+  if [[ -f /workspace/coordinator/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md ]]; then
+    printf '  %b\n' "${yellow}cd /workspace/coordinator${reset}"
+    printf '    External coordinator checkout detected at /workspace/coordinator.\n'
+    printf '  %b\n' "${yellow}codex \"\$(cat /workspace/coordinator/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md)\"${reset}"
+    printf '    Launch Codex with the standalone coordinator prompt.\n'
+  else
+    printf '  %s\n' "No standalone coordinator checkout detected at /workspace/coordinator."
+    printf '  %s\n' "Toolbelt does not embed coordinator assets; mount or clone the standalone repository there if you need orchestration flows."
+  fi
   printf '\n'
 
   local path base

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASELINE_ROOT="${BASELINE_ROOT:-/opt/codex-baseline}"
 WORKSPACE_ROOT="/workspace"
-FORCE=0
 QUIET=0
 
 usage() {
@@ -13,75 +11,17 @@ Usage:
 
 Options:
   --workspace DIR   Target workspace path (default: /workspace)
-  --force           Overwrite safe baseline-managed files from baseline
+  --force           Accepted for compatibility; no longer has an effect
   --quiet           Suppress non-error output
 USAGE
 }
 
-log() {
+info() {
   [[ "$QUIET" -eq 1 ]] || echo "$*"
 }
 
-copy_tree_missing_only() {
-  local src="$1"
-  local dst="$2"
-
-  mkdir -p "$dst"
-
-  local rel
-  while IFS= read -r -d '' rel; do
-    mkdir -p "$dst/$rel"
-  done < <(cd "$src" && find . -mindepth 1 -type d -print0)
-
-  while IFS= read -r -d '' rel; do
-    local src_file="$src/$rel"
-    local dst_file="$dst/$rel"
-    if [[ ! -e "$dst_file" ]]; then
-      mkdir -p "$(dirname "$dst_file")"
-      cp -a "$src_file" "$dst_file"
-      log "seeded $dst_file"
-    fi
-  done < <(cd "$src" && find . -mindepth 1 -type f -print0)
-}
-
-copy_tree_force() {
-  local src="$1"
-  local dst="$2"
-  mkdir -p "$dst"
-  cp -a "$src/." "$dst/"
-  log "refreshed $dst from baseline"
-}
-
-refresh_coordination_safe_force() {
-  local src_coord="$1"
-  local dst_coord="$2"
-  local rel
-
-  mkdir -p "$dst_coord"
-
-  for rel in prompts roles templates examples benchmark_profiles; do
-    if [[ -d "$src_coord/$rel" ]]; then
-      copy_tree_force "$src_coord/$rel" "$dst_coord/$rel"
-    fi
-  done
-
-  for rel in README.md COORDINATOR_INSTRUCTIONS.md; do
-    if [[ -f "$src_coord/$rel" ]]; then
-      cp -a "$src_coord/$rel" "$dst_coord/$rel"
-      log "refreshed $dst_coord/$rel from baseline"
-    fi
-  done
-}
-
-seed_workspace() {
-  local src="$1"
-  local dst="$2"
-
-  if [[ "$FORCE" -eq 1 ]]; then
-    copy_tree_force "$src" "$dst"
-  else
-    copy_tree_missing_only "$src" "$dst"
-  fi
+warn() {
+  echo "$*" >&2
 }
 
 main() {
@@ -92,7 +32,6 @@ main() {
         shift 2
         ;;
       --force)
-        FORCE=1
         shift
         ;;
       --quiet)
@@ -104,39 +43,18 @@ main() {
         exit 0
         ;;
       *)
-        echo "unknown argument: $1" >&2
+        warn "unknown argument: $1"
         usage
         exit 1
         ;;
     esac
   done
 
-  [[ -d "$BASELINE_ROOT" ]] || {
-    echo "baseline not found: $BASELINE_ROOT" >&2
-    exit 1
-  }
-
-  mkdir -p "$WORKSPACE_ROOT"
-
-  local baseline_scripts="$BASELINE_ROOT/scripts"
-  local baseline_coord="$BASELINE_ROOT/coordination"
-
-  [[ -d "$baseline_scripts" ]] || {
-    echo "baseline scripts directory missing: $baseline_scripts" >&2
-    exit 1
-  }
-  [[ -d "$baseline_coord" ]] || {
-    echo "baseline coordination directory missing: $baseline_coord" >&2
-    exit 1
-  }
-
-  seed_workspace "$baseline_scripts" "$WORKSPACE_ROOT/scripts"
-
-  if [[ "$FORCE" -eq 1 ]]; then
-    refresh_coordination_safe_force "$baseline_coord" "$WORKSPACE_ROOT/coordination"
-  else
-    seed_workspace "$baseline_coord" "$WORKSPACE_ROOT/coordination"
-  fi
+  warn "codex-init-workspace is a compatibility redirect in toolbelt."
+  warn "Toolbelt no longer seeds coordinator assets; use the standalone /workspace/coordinator repository."
+  info "Requested workspace: $WORKSPACE_ROOT"
+  info "Next step: mount or clone coordinator at /workspace/coordinator and run its scripts directly."
+  exit 1
 }
 
 main "$@"

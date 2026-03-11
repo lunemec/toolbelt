@@ -2,7 +2,7 @@
 
 Developer-focused Docker image and selective-mount launcher for Codex-driven software workflows.
 
-This repository now owns the development image and host launcher only. The coordinator/orchestration source of truth has been extracted into the standalone `/workspace/coordinator` repository. Future GitHub-based integration back into the image is intentionally left as a TODO.
+This repository now owns the development image and host launcher only. The coordinator/orchestration source of truth lives in the standalone `/workspace/coordinator` repository for this phase. Any future packaged integration is outside the scope of this repo.
 
 ## What You Get
 
@@ -102,15 +102,16 @@ Behavior summary:
 
 Coordinator assets are no longer baked into the image and are no longer maintained in this repository.
 
-- Standalone repo path during this migration: `/workspace/coordinator`
-- Current status: source of truth moved there; `toolbelt` integration is deferred
-- `codex-init-workspace` remains in the image only as a deprecated compatibility stub and exits with guidance instead of seeding assets
+- Canonical coordinator path inside the container: `/workspace/coordinator`
+- Current status for this phase: hard cutover is complete; `toolbelt` only references the external coordinator checkout
+- `codex-init-workspace` remains installed only as a compatibility redirect and never seeds or repairs coordinator assets
+- With `scripts/toolbelt.sh`, a host path whose basename is `coordinator` mounts to `/workspace/coordinator`
 
-If you need the coordinator inside this container, mount or clone the standalone repo and run it directly from `/workspace/coordinator`.
+If you need the coordinator inside this container, mount or clone the standalone repo so it appears at `/workspace/coordinator`, then run it directly from there.
 
 ## Interactive Container Behavior
 
-At startup, the entrypoint still bootstraps auth/config homes and prints a short MOTD. The MOTD now points at the standalone coordinator repo when it is present in the mounted workspace and otherwise states that coordinator assets are not embedded in the image.
+At startup, the entrypoint still bootstraps auth/config homes and prints a short MOTD. The MOTD only points at the external coordinator checkout when `/workspace/coordinator` is present in the mounted workspace; otherwise it states that coordinator assets are not embedded in the image and tells you to mount or clone the standalone repo there.
 
 ## Voice STT
 
@@ -132,6 +133,12 @@ The image still bakes every remaining `scripts/*.sh` file from this repo into `/
 - `scripts/voice-stt-once.sh`
 
 ## Verification
+
+For coordinator-boundary changes that do not touch `Dockerfile`, run:
+
+```bash
+./scripts/verify_toolbelt_coordinator_boundary_contract.sh
+```
 
 After image changes, run:
 

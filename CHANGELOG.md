@@ -8,12 +8,14 @@ All notable changes to this project are documented in this file.
 - `toolbelt` now owns only the development image, entrypoint/bootstrap glue, host launcher, and toolbelt-specific helper scripts.
 - `codex-init-workspace` is now a deprecated compatibility stub that exits with guidance instead of seeding embedded coordinator assets.
 - The container MOTD now points users at `/workspace/coordinator` when that standalone repository is present and otherwise states that coordinator assets are no longer embedded in the image.
+- `README.md`, `container/codex-entrypoint.sh`, and `container/codex-init-workspace.sh` now describe the coordinator split as the steady-state boundary for this phase: `toolbelt` only references an external checkout at `/workspace/coordinator`, while `codex-init-workspace` remains redirect-only.
 
 ### Removed
 - Embedded coordinator baseline files from the `toolbelt` Docker build context.
 - Coordinator quickstart/bootstrap documentation from `toolbelt` README and AGENTS guidance.
 
 ### Added
+- `scripts/verify_toolbelt_coordinator_boundary_contract.sh` contract verifier for steady-state coordinator boundary messaging, launcher mount semantics, entrypoint external-checkout detection, and `codex-init-workspace` redirect behavior.
 - New `taskctl` benchmark command: `benchmark-audit-chain`, which validates benchmark evidence integrity across parent/child strict-phase tasks.
 - New `taskctl` benchmark command: `benchmark-init`, which backfills benchmark metadata defaults and scaffolds strict Result templates (requirements, gates, scores, command blocks, and `Log Hash` placeholders).
 - New `taskctl create/delegate` benchmark options: `--benchmark-profile`, `--benchmark-workdir`, `--gate-target`, `--scorecard-artifact`, `--benchmark-opt-out-reason`, and `--no-benchmark-inherit`.
