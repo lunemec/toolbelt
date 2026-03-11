@@ -6,13 +6,14 @@ ARG RUST_TOOLCHAIN=stable
 ARG CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6
 ARG GHZ_VERSION=v0.121.0
 ARG GRPCURL_VERSION=v1.9.3
+ARG CURLIE_VERSION=v1.8.2
 ARG CLOUD_SDK_VERSION=516.0.0
 ARG KUBECTL_VERSION=v1.33.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash ca-certificates curl git docker-cli docker-compose docker-buildx iptables python3 make g++ ffmpeg \
   less vim nano tree tmux fzf ripgrep fd-find jq yq zip xz-utils \
-  cloc sloccount hyperfine entr httpie ncdu \
+  cloc sloccount hyperfine entr httpie xh ncdu \
   wrk apache2-utils hey wget aria2 \
   kubectx \
   procps iproute2 iputils-ping dnsutils netcat-openbsd lsof strace rsync openssh-client \
@@ -83,7 +84,8 @@ RUN set -eux; \
   ln -sf "${cursor_root}/cursor-agent" /root/.local/bin/cursor-agent
 
 RUN GOBIN=/usr/local/bin go install github.com/bojand/ghz/cmd/ghz@${GHZ_VERSION} \
-  && GOBIN=/usr/local/bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@${GRPCURL_VERSION}
+  && GOBIN=/usr/local/bin go install github.com/fullstorydev/grpcurl/cmd/grpcurl@${GRPCURL_VERSION} \
+  && GOBIN=/usr/local/bin go install github.com/rs/curlie@${CURLIE_VERSION}
 
 RUN set -eux; \
   arch="$(dpkg --print-architecture)"; \
@@ -105,7 +107,6 @@ RUN set -eux; \
 
 COPY scripts/*.sh /opt/codex-baseline/scripts/
 COPY scripts/voice_autotranscribe.py /usr/local/bin/voice_autotranscribe.py
-COPY coordination /opt/codex-baseline/coordination
 COPY container/codex-init-workspace.sh /usr/local/bin/codex-init-workspace
 COPY container/codex-entrypoint.sh /usr/local/bin/codex-entrypoint
 
@@ -115,9 +116,7 @@ RUN chmod +x /opt/codex-baseline/scripts/*.sh \
   /usr/local/bin/codex-entrypoint \
   && ln -sf /opt/codex-baseline/scripts/voice-stt-start.sh /usr/local/bin/voice-stt-start \
   && ln -sf /opt/codex-baseline/scripts/voice-stt-stop.sh /usr/local/bin/voice-stt-stop \
-  && ln -sf /opt/codex-baseline/scripts/voice-stt-once.sh /usr/local/bin/voice-stt-once \
-  && rm -rf /opt/codex-baseline/coordination/runtime \
-  && mkdir -p /opt/codex-baseline/coordination/runtime/logs /opt/codex-baseline/coordination/runtime/pids
+  && ln -sf /opt/codex-baseline/scripts/voice-stt-once.sh /usr/local/bin/voice-stt-once
 
 RUN set -eux; \
   node --version; npm --version; pnpm --version; \
@@ -125,7 +124,7 @@ RUN set -eux; \
   go version; rustc --version; cargo --version; \
   rg --version; fd --version; jq --version; yq --version; \
   fzf --version; cloc --version; sloccount --version; hyperfine --version; \
-  http --version; ncdu --version; command -v entr ffmpeg; \
+  http --version; xh --version; curlie --version; ncdu --version; command -v entr ffmpeg; \
   claude --version; gemini --version; cursor --version; agent --version; cursor-agent --version; \
   wrk --version || true; ab -V; hey --help | head -n 2; \
   ghz --version; grpcurl --version; wget --version; aria2c --version; \

@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
+### Changed
+- Coordinator source-of-truth has been extracted out of `toolbelt` into the standalone `/workspace/coordinator` repository.
+- `toolbelt` now owns only the development image, entrypoint/bootstrap glue, host launcher, and toolbelt-specific helper scripts.
+- `codex-init-workspace` is now a deprecated compatibility stub that exits with guidance instead of seeding embedded coordinator assets.
+- The container MOTD now points users at `/workspace/coordinator` when that standalone repository is present and otherwise states that coordinator assets are no longer embedded in the image.
+
+### Removed
+- Embedded coordinator baseline files from the `toolbelt` Docker build context.
+- Coordinator quickstart/bootstrap documentation from `toolbelt` README and AGENTS guidance.
+
 ### Added
 - New `taskctl` benchmark command: `benchmark-audit-chain`, which validates benchmark evidence integrity across parent/child strict-phase tasks.
 - New `taskctl` benchmark command: `benchmark-init`, which backfills benchmark metadata defaults and scaffolds strict Result templates (requirements, gates, scores, command blocks, and `Log Hash` placeholders).
@@ -18,7 +28,7 @@ All notable changes to this project are documented in this file.
 - Google Cloud CLI (`gcloud`) and Kubernetes CLIs (`kubectl`, `kubectx`, `kubens`) in the development image.
 - Google GKE auth helper (`gke-gcloud-auth-plugin`) in the development image for `kubectl` authentication against GKE.
 - Additional AI provider CLIs in the development image: `@anthropic-ai/claude-code` (`claude`), `@google/gemini-cli` (`gemini`), and Cursor Agent (`cursor`/`agent`/`cursor-agent`).
-- Additional terminal tooling in the development image: `fzf`, `cloc`, `sloccount`, `hyperfine`, `entr`, `httpie`, and `ncdu`.
+- Additional terminal tooling in the development image: `fzf`, `cloc`, `sloccount`, `hyperfine`, `entr`, `httpie`, `xh`, `curlie`, and `ncdu`.
 - Additional performance/request tooling in the development image: `wrk`, `ab` (`apache2-utils`), `hey`, `ghz`, `grpcurl`, `wget`, and `aria2`.
 - Local background specialist worker system with `scripts/agent_worker.sh` and `scripts/agents_ctl.sh`.
 - Role prompt files for `db`, `be`, `fe`, and `review` agents in `coordination/roles/`.
@@ -38,8 +48,12 @@ All notable changes to this project are documented in this file.
 - `scripts/verify_orchestrator_clarification_suite.sh` single-entry verification suite for all clarification and locking contracts.
 - `scripts/verify_agent_worker_reasoning_contract.sh` contract verifier proving per-agent reasoning selection isolation (`coordinator` planner effort vs downstream default effort with no sticky leakage).
 - Host-side selective mount launcher `scripts/toolbelt.sh` with opt-in Docker socket support (`--docker`) and path-to-`/workspace/<basename>` mapping.
-
 ### Changed
+- `scripts/toolbelt.sh -gws/--gws` now exports portable host `gws` credentials with `gws auth export --unmasked`, mounts them read-only, and `/usr/local/bin/codex-entrypoint` hydrates them into in-container `~/.config/gws/credentials.json` without modifying host files; host ADC from `~/.config/gcloud/application_default_credentials.json` remains the fallback when export is unavailable.
+- `scripts/toolbelt.sh -gws/--gws` now fails fast with actionable guidance when neither portable `gws` credentials nor ADC are available, instead of deferring to an in-container `401 Access denied. No credentials provided` failure.
+- `README.md` now documents that `gws auth status` inside the container should reflect hydrated plaintext/runtime credentials, and that `403 insufficientPermissions` indicates missing OAuth scopes in the host `gws` login rather than a failed mount.
+- The development image file is now `Dockerfile` instead of `Dockerfile.codex-dev`, and image build docs/scripts now default to `docker build -t toolbelt:latest .`.
+- The development image now uses `node:22-trixie` and Debian Trixie packages for Docker client tooling (`docker`, `docker buildx`, Compose v2 via `docker compose` and `docker-compose`) instead of Bookworm `docker.io` plus a manually downloaded Compose plugin wrapper.
 - `scripts/taskctl.sh benchmark-audit-chain` now enforces requirement-aware chain coverage, requiring execute/review evidence ownership per benchmark requirement.
 - `scripts/taskctl.sh benchmark-verify` now requires `Log Hash` fields for structured command evidence and validates hash integrity against referenced logs.
 - `scripts/taskctl.sh benchmark-rerun` now emits integrity metadata (`task_file_hash`, `profile_hash`, per-command `log_hash`, and required-command hash) in rerun summaries.
@@ -75,6 +89,7 @@ All notable changes to this project are documented in this file.
 - `scripts/toolbelt.sh` now mounts the current working directory to `/workspace` when no positional mount paths are provided.
 - `scripts/toolbelt.sh` now exposes unified short-word and long flag aliases across options (`-docker`/`--docker`, `-image`/`--image`, `-workdir`/`--workdir`, `-shell`/`--shell`, `-tmpfs-size`/`--tmpfs-size`, `-keep`/`--keep`), while keeping compatibility aliases such as `-w`.
 - `scripts/toolbelt.sh` gcloud/k8s mount validation errors now reference both accepted aliases (`-gcloud`/`--gcloud`, `-k8s`/`--k8s`) for clearer guidance.
+- `scripts/toolbelt.sh` now supports `-gws`/`--gws` to mount host Google Workspace CLI config from `~/.config/gws`, and `/usr/local/bin/codex-entrypoint` now hydrates it into the container's `gws` config directory.
 - Startup MOTD now presents grouped/colorized sections with most-used commands first (`codex`, `ralph`, `openclaw`, `claude`, `gemini`, `cursor` with `agent`/`cursor-agent` aliases, `codex-init-workspace`), plus a dynamic absolute-path listing of all image-baked scripts under `/opt/codex-baseline/scripts/`.
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now enforces a PM-style plan loop (deep clarification, specialist delegation cycles, aggregation, blocker-first handling, and explicit next-step checkpoints).
 - `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` now requires TDD red-green-blue workflow evidence for software specialist tasks unless explicitly waived by the user.
@@ -97,6 +112,7 @@ All notable changes to this project are documented in this file.
 - `README.md` container run guidance now defaults to `--tmpfs /root/.codex` plus minimal read-only auth/config file mounts and removes full host `~/.codex` mount recommendations.
 
 ### Verified
+- Debian Trixie `docker-cli`, `docker-buildx`, `docker-compose`, and `iptables` validate inside the image, and host-socket smoke succeeds with `docker ps`, `docker compose version`, and `docker buildx version`.
 - `scripts/verify_benchmark_contract.sh` passes, covering profile-driven benchmark evidence validation, scorecard generation, and strict closeout gate checks.
 - `scripts/verify_orchestrator_clarification_suite.sh` passes, covering clarification gating, specialist blocker routing, task lock lifecycle/conflict handling, worker heartbeat/release behavior, per-agent reasoning isolation, and template metadata persistence.
 

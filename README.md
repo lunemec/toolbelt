@@ -1,23 +1,19 @@
 # Codex Dev Toolbelt
 
-Developer-focused Docker image and local coordination toolkit for Codex-driven software workflows.
+Developer-focused Docker image and selective-mount launcher for Codex-driven software workflows.
 
-This repository provides:
-- `Dockerfile.codex-dev`: a reproducible dev image for Python, Node.js, Go, and Rust work.
-- `scripts/toolbelt.sh`: host-side launcher for selective mounts into `/workspace/<basename>`.
-- `scripts/taskctl.sh`, `scripts/agent_worker.sh`, `scripts/agents_ctl.sh`: local multi-agent orchestration.
-- `container/codex-init-workspace.sh` and `container/codex-entrypoint.sh`: container startup bootstrap for coordination assets.
+This repository now owns the development image and host launcher only. The coordinator/orchestration source of truth has been extracted into the standalone `/workspace/coordinator` repository. Future GitHub-based integration back into the image is intentionally left as a TODO.
 
 ## What You Get
 
-Base image: `node:22-bookworm` (Debian Bookworm)
+Base image: `node:22-trixie` (Debian Trixie)
 
 Installed toolchains and CLIs include:
 - Node.js, `npm`, `pnpm` (via Corepack)
 - Python 3, `pip3`, `uv`, `poetry`, `pre-commit`
 - Go (official tarball install)
 - Rust (`rustup`, `cargo`, `rustc`)
-- Dev/system tools: `git`, `docker`, `fzf`, `rg`, `fd`, `jq`, `yq`, `cloc`, `sloccount`, `hyperfine`, `wrk`, `ab`, `hey`, `ghz`, `grpcurl`, `httpie`, `wget`, `aria2`, `entr`, `ncdu`, `tmux`, `shellcheck`, `shfmt`, and more
+- Dev/system tools: `git`, Docker client tooling (`docker`, `docker buildx`, Compose v2 via both `docker compose` and `docker-compose`), `iptables`, `fzf`, `rg`, `fd`, `jq`, `yq`, `cloc`, `sloccount`, `hyperfine`, `wrk`, `ab`, `hey`, `ghz`, `grpcurl`, `httpie`, `xh`, `curlie`, `wget`, `aria2`, `entr`, `ncdu`, `tmux`, `shellcheck`, `shfmt`, and more
 - Cloud/Kubernetes CLIs: `gcloud`, `gke-gcloud-auth-plugin`, `kubectl`, `kubectx`, `kubens`
 - AI CLIs: `codex`, `claude`, `gemini`, and Cursor Agent as `cursor` (`agent`/`cursor-agent` aliases)
 - Workspace CLIs: `ralph`, `openclaw`, and `@googleworkspace/cli`
@@ -31,14 +27,16 @@ The `codex` wrapper is preserved as:
 
 On the host machine:
 - Docker Engine running
-- Access to `/var/run/docker.sock` (optional but useful for Docker-in-Docker workflows)
+- Access to `/var/run/docker.sock` when you want the container to control the host Docker daemon
+
+The image ships client-side Docker tooling only. It is intended to talk to a mounted host Docker socket, not to run `dockerd` inside the container.
 
 ## Quick Start
 
 1. Build the image:
 
 ```bash
-docker build -f Dockerfile.codex-dev -t toolbelt:latest .
+docker build -t toolbelt:latest .
 ```
 
 2. Run an interactive container with your current repository, ephemeral Codex state, mounted auth/config inputs, and optional host Docker access:
@@ -54,67 +52,22 @@ docker run --rm -it \
   toolbelt:latest
 ```
 
-Command breakdown:
-- `--rm`: remove the container when you exit.
-- `-it`: keep STDIN open and allocate a TTY for interactive shell use.
-- `-v "$PWD":/workspace`: mount your current host directory into the container.
-- `-w /workspace`: start the shell in `/workspace`.
-- `--tmpfs /root/.codex:...`: keep Codex runtime state ephemeral.
-- `-v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro"`: provide OAuth/API auth material without mounting the full host `~/.codex`.
-- `-v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro"`: provide Codex config defaults without mounting full host state.
-- `-v /var/run/docker.sock:/var/run/docker.sock`: let containerized tools talk to the host Docker daemon.
-- `toolbelt:latest`: image name to run.
-
 Common variants:
-- Without Docker socket mount (container cannot control host Docker):
-
-```bash
-docker run --rm -it \
-  -v "$PWD":/workspace \
-  -w /workspace \
-  --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
-  -v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro" \
-  -v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro" \
-  toolbelt:latest
-```
-
-- With API-key auth and no host Codex mounts:
-
-```bash
-docker run --rm -it \
-  -v "$PWD":/workspace \
-  -w /workspace \
-  --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
-  -e OPENAI_API_KEY \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  toolbelt:latest
-```
-
-- Fully isolated session (no Docker socket and no host Codex mounts):
-
-```bash
-docker run --rm -it \
-  -v "$PWD":/workspace \
-  -w /workspace \
-  --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
-  -e OPENAI_API_KEY \
-  toolbelt:latest
-```
-
-If single-file mounts are unreliable in your Docker runtime, mount a temporary directory that only contains `auth.json` and `config.toml`, then point `CODEX_AUTH_JSON_SRC` and `CODEX_CONFIG_TOML_SRC` at those files.
+- Omit `/var/run/docker.sock` when you do not need host Docker control.
+- Use `-e OPENAI_API_KEY` instead of auth/config mounts for isolated API-key sessions.
 
 3. Verify core tooling:
 
 ```bash
 command -v node npm pnpm python3 pip3 uv poetry go rustc cargo \
-  fzf rg fd jq yq cloc sloccount hyperfine wrk ab hey ghz grpcurl http wget aria2c entr ncdu \
-  gcloud gke-gcloud-auth-plugin kubectl kubectx kubens \
+  fzf rg fd jq yq cloc sloccount hyperfine wrk ab hey ghz grpcurl http xh curlie wget aria2c entr ncdu \
+  gcloud gke-gcloud-auth-plugin kubectl kubectx kubens docker docker-compose iptables \
   codex codex-real claude gemini cursor agent cursor-agent openclaw
 ```
 
-## Selective Mount Workflow (Smaller Surface Area)
+## Selective Mount Workflow
 
-Use `scripts/toolbelt.sh` when you want to mount only a few folders/files instead of an entire project tree.
+Use `scripts/toolbelt.sh` when you want to mount only selected folders/files instead of an entire project tree.
 
 ```bash
 # Mount current directory to /workspace
@@ -126,8 +79,8 @@ scripts/toolbelt.sh ./directory1 ./directory2
 # Add host Docker access only when needed
 scripts/toolbelt.sh -docker ../directory1 ../directory2
 
-# Add hardened gcloud + kube credential mounts when needed
-scripts/toolbelt.sh -gcloud -k8s ./directory1 ./directory2
+# Add Google Workspace and Kubernetes auth when needed
+scripts/toolbelt.sh -gws -k8s ./directory1 ./directory2
 
 # Run a command instead of an interactive shell
 scripts/toolbelt.sh ./directory1 ./directory2 -- bash -lc 'ls -la /workspace'
@@ -139,255 +92,71 @@ Behavior summary:
 - Docker socket is opt-in via `-docker` / `--docker`.
 - `/root/.codex` is mounted as tmpfs (`512m` default).
 - `~/.codex/auth.json` and `~/.codex/config.toml` are mounted read-only automatically when present.
-- `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud` inside container runtime state.
+- `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud`.
+- `-gws` / `--gws` mounts host `~/.config/gws`, exports portable host `gws` credentials when available, and sets `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/run/secrets/gws-credentials/credentials.json` inside the container.
+- `-gws` / `--gws` still hydrates `~/.config/gws` for compatibility and uses ADC as fallback when exported credentials are unavailable.
 - `-k8s` / `--k8s` mounts host `~/.kube/config` read-only to `/run/secrets/kube-config`; entrypoint hydrates `/root/.kube/config`.
-- Path basenames must be unique per run (to avoid destination collisions).
-- Missing requested credential sources fail fast with a clear error.
-- Override credential source paths with `CODEX_GCLOUD_CONFIG_SRC` and `CODEX_KUBECONFIG_SRC`.
+- Override credential source paths with `CODEX_GCLOUD_CONFIG_SRC`, `CODEX_GWS_CONFIG_SRC`, and `CODEX_KUBECONFIG_SRC`.
 
-Useful options:
-- `-docker` / `--docker`
-- `-gcloud` / `--gcloud`
-- `-k8s` / `--k8s`
-- `-image` / `--image IMAGE`
-- `-workdir` / `--workdir DIR` (`-w DIR` also supported)
-- `-shell` / `--shell SHELL`
-- `-tmpfs-size` / `--tmpfs-size SIZE`
-- `-keep` / `--keep`
+## Coordinator Split
 
-Optional shell aliases:
+Coordinator assets are no longer baked into the image and are no longer maintained in this repository.
 
-`~/.zshrc`:
+- Standalone repo path during this migration: `/workspace/coordinator`
+- Current status: source of truth moved there; `toolbelt` integration is deferred
+- `codex-init-workspace` remains in the image only as a deprecated compatibility stub and exits with guidance instead of seeding assets
 
-```bash
-alias toolbelt='/absolute/path/to/this/repo/scripts/toolbelt.sh'
-```
+If you need the coordinator inside this container, mount or clone the standalone repo and run it directly from `/workspace/coordinator`.
 
-`~/.bashrc`:
+## Interactive Container Behavior
 
-```bash
-alias toolbelt='/absolute/path/to/this/repo/scripts/toolbelt.sh'
-```
+At startup, the entrypoint still bootstraps auth/config homes and prints a short MOTD. The MOTD now points at the standalone coordinator repo when it is present in the mounted workspace and otherwise states that coordinator assets are not embedded in the image.
 
-## Workspace Bootstrap Behavior
+## Voice STT
 
-Workspace bootstrap is now opt-in.
-At container start, entrypoint does not auto-seed `/workspace`.
-
-Use `codex-init-workspace` when you want to seed baseline assets:
-
-```bash
-# Seed only missing files
-codex-init-workspace --workspace /workspace
-
-# Overwrite with baseline files
-codex-init-workspace --workspace /workspace --force
-```
-
-This command seeds from `/opt/codex-baseline` into:
-- `/workspace/scripts`
-- `/workspace/coordination`
-
-If older runs left partial coordination state (missing prompts/folders), run:
-
-```bash
-scripts/coordination_repair.sh
-```
-
-For interactive shell sessions, container startup prints a short MOTD with quick commands for:
-- most-used CLIs first (`codex`, `ralph`, `openclaw`, `claude`, `gemini`, `cursor` with `agent`/`cursor-agent` aliases, `codex-init-workspace`)
-- workspace bootstrap (`codex-init-workspace`)
-- coordination repair (`scripts/coordination_repair.sh`)
-- coordination workers (`scripts/agents_ctl.sh start`)
-- top-level orchestrator launch command
-- grouped, colorized sections with image-baked script listings by absolute path (`/opt/codex-baseline/scripts/*.sh`)
-
-## Multi-Agent Coordination
-
-The coordination board lives under `coordination/` and supports dynamic skill agents with priority queues.
-
-Queue layout:
-- `coordination/inbox/<agent>/<NNN>/`
-- `coordination/in_progress/<agent>/`
-- `coordination/done/<agent>/<NNN>/`
-- `coordination/blocked/<agent>/<NNN>/`
-- `coordination/roles/<agent>.md`
-
-Priority model:
-- Lower numeric priority is more urgent (`000` is highest).
-
-Top-level orchestrator prompt:
-- Prompt file: `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md`
-- Auto-launch Codex with it:
-  - `codex "$(cat /workspace/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md)"`
-
-### Core Task Commands
-
-```bash
-# Create or refresh agent scaffolding (queues + role file)
-scripts/taskctl.sh ensure-agent pm
-scripts/taskctl.sh ensure-agent researcher
-scripts/taskctl.sh ensure-agent planner
-scripts/taskctl.sh ensure-agent fe --task TASK-1002
-
-# Create a top-level task
-scripts/taskctl.sh create TASK-1000 "Plan profile feature" --to pm --from pm --priority 10
-
-# Delegate to another agent
-scripts/taskctl.sh delegate pm designer TASK-1001 "Create UX spec" --priority 20 --parent TASK-1000
-
-# Claim / finish / block
-scripts/taskctl.sh claim designer
-scripts/taskctl.sh verify-done designer TASK-1001
-scripts/taskctl.sh benchmark-init coordinator TASK-2000
-scripts/taskctl.sh benchmark-verify coordinator TASK-2000
-scripts/taskctl.sh benchmark-rerun coordinator TASK-2000
-scripts/taskctl.sh benchmark-score coordinator TASK-2000
-scripts/taskctl.sh benchmark-audit-chain coordinator TASK-2000
-scripts/taskctl.sh benchmark-closeout-check coordinator TASK-2000
-scripts/taskctl.sh done designer TASK-1001 "Delivered UX spec and validation notes"
-scripts/taskctl.sh block be TASK-1003 "Waiting on API contract clarification"
-
-# List tasks
-scripts/taskctl.sh list
-scripts/taskctl.sh list pm
-```
-
-Block handling:
-- Blocking a task moves it to `blocked`.
-- A priority `000` blocker report task is auto-created for `creator_agent`.
-
-### Background Workers
-
-Start workers:
-
-```bash
-# Start all discovered role agents except default orchestrators
-scripts/agents_ctl.sh start
-
-# Include orchestrators too
-scripts/agents_ctl.sh start --all
-
-# Start selected agents with custom poll interval
-scripts/agents_ctl.sh start designer architect fe be --interval 20
-
-# Run one-shot workers in parallel and wait (useful where detached jobs do not persist)
-scripts/agents_ctl.sh once designer architect fe be
-```
-
-Monitor and stop:
-
-```bash
-scripts/agents_ctl.sh status
-scripts/agents_ctl.sh stop
-```
-
-Worker logs and runtime files:
-- `coordination/runtime/logs/`
-- `coordination/runtime/pids/`
-
-Notes:
-- `scripts/agents_ctl.sh status` now cleans stale PID files automatically.
-- In environments that reap detached background jobs between separate shell invocations, prefer `scripts/agents_ctl.sh once ...` for deterministic execution.
-- Worker reasoning policy defaults to `xhigh` for strict-delivery lanes (`pm`, `coordinator`, `planner`, `researcher`, `architect`, `be`, `review`) and `medium` for others; override with `AGENT_XHIGH_AGENTS`, `AGENT_PLANNER_REASONING_EFFORT`, and `AGENT_DEFAULT_REASONING_EFFORT` if needed (`default`/`null` aliases normalize to `none`).
-- Worker success does not auto-close tasks; `taskctl verify-done` must pass before transition to `done`.
-- Benchmark tasks now require structured evidence blocks (`Command`/`Exit`/`Log`/`Log Hash`/`Observed`) and independent rerun evidence for strict closeout.
-- `benchmark-closeout-check` enforces profile-configured independent reruns and rerun freshness after execute-phase updates (default profile remains review-owned).
-- Benchmark metadata now inherits from parent tasks by default on `create`/`delegate`; strict benchmark-parent execution/review/closeout tasks require benchmark metadata or explicit `benchmark_opt_out_reason`.
-- `taskctl create/delegate` now auto-runs benchmark result scaffolding when `benchmark_profile` is active.
-- Rerun summaries now include `run_nonce` plus per-command `log_hash` integrity fields.
-
-## Safety Guards
-
-Orchestration scripts enforce:
-- Must run inside Docker (`/.dockerenv` must exist)
-- Must run from `/workspace` (or subpath)
-- Path overrides must resolve under `/workspace`
-
-This applies to:
-- `scripts/taskctl.sh`
-- `scripts/agent_worker.sh`
-- `scripts/agents_ctl.sh`
-
-## Voice STT (Whisper) Built-in
-
-The image now includes a built-in Whisper STT runtime for OpenClaw media inbox workflows.
+The image includes a built-in Whisper STT runtime for OpenClaw media inbox workflows.
 
 Included by default:
 - `ffmpeg`
 - Python runtime at `/opt/voice-stt` with `faster-whisper`
-- `voice-stt-start` (background watcher)
+- `voice-stt-start`
 - `voice-stt-stop`
 - `voice-stt-once <audio-file>`
 
-Default watcher behavior:
-- Watches `/root/.openclaw/media/inbound`
-- On startup, skips (and by default prunes) pre-existing audio files to avoid replay spam
-- Writes logs/state under `/root/.openclaw/voice`
-- Saves transcripts to `/root/.openclaw/voice/transcripts`
-- Deletes processed audio files after successful transcript save (transcripts remain)
-- Posts transcript messages to Discord when token/channel are available
+## Image-Baked Scripts
 
-Default env:
-- `WHISPER_LANGUAGE=en`
-- `WHISPER_MODEL=small`
-- `WHISPER_COMPUTE_TYPE=int8`
-- `VOICE_STT_SKIP_EXISTING_ON_START=1`
-- `VOICE_STT_PRUNE_EXISTING_ON_START=1`
-- `VOICE_STT_DELETE_AFTER_TRANSCRIBE=1`
+The image still bakes every remaining `scripts/*.sh` file from this repo into `/opt/codex-baseline/scripts/`. After the coordinator extraction, that set is limited to toolbelt-owned helpers such as:
+- `scripts/toolbelt.sh`
+- `scripts/voice-stt-start.sh`
+- `scripts/voice-stt-stop.sh`
+- `scripts/voice-stt-once.sh`
 
-## Validation Commands (Required After Dockerfile Changes)
+## Verification
 
-Run these after editing `Dockerfile.codex-dev`:
-
-1. Build:
+After image changes, run:
 
 ```bash
-docker build -f Dockerfile.codex-dev -t toolbelt:latest .
-```
-
-2. Check tool presence:
-
-```bash
-docker run --rm toolbelt:latest bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq codex codex-real'
-```
-
-3. Runtime smoke checks:
-
-```bash
+docker build -t toolbelt:latest .
+docker run --rm toolbelt:latest bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq http xh curlie codex codex-real docker docker-compose iptables && docker compose version && docker-compose --version && docker buildx version'
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock toolbelt:latest bash -lc 'docker ps >/dev/null && docker compose version >/dev/null && docker-compose --version >/dev/null && docker buildx version >/dev/null'
 docker run --rm toolbelt:latest bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'
-```
-
-4. GKE auth plugin presence:
-
-```bash
-docker run --rm toolbelt:latest bash -lc 'command -v gke-gcloud-auth-plugin && gke-gcloud-auth-plugin --version'
 ```
 
 ## Repository Layout
 
 ```text
-.
-├── Dockerfile.codex-dev
+toolbelt/
 ├── CHANGELOG.md
+├── Dockerfile
+├── README.md
+├── AGENTS.md
 ├── container/
 │   ├── codex-entrypoint.sh
 │   └── codex-init-workspace.sh
-├── coordination/
-│   ├── README.md
-│   ├── COORDINATOR_INSTRUCTIONS.md
-│   ├── templates/
-│   ├── examples/
-│   └── roles/
 └── scripts/
     ├── toolbelt.sh
-    ├── taskctl.sh
-    ├── agent_worker.sh
-    └── agents_ctl.sh
+    ├── voice-stt-start.sh
+    ├── voice-stt-stop.sh
+    ├── voice-stt-once.sh
+    └── voice_autotranscribe.py
 ```
-
-## Additional Docs
-
-- Coordination details: `coordination/README.md`
-- Orchestrator operating contract: `coordination/COORDINATOR_INSTRUCTIONS.md`
-- Change history: `CHANGELOG.md`

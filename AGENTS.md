@@ -1,67 +1,44 @@
 # AGENTS.md
 
 ## Project Purpose
-This repository defines a Codex-focused developer Docker image (`Dockerfile.codex-dev`) used for coding, review, and general software development workflows.
+This repository owns the `toolbelt` development image and its host-side launcher workflow.
 
-## Primary File
-- `Dockerfile.codex-dev`: single source of truth for the development image.
-- `CHANGELOG.md`: record of notable project changes.
-- `coordination/`: local multi-agent task orchestration board.
-- `scripts/taskctl.sh`: helper CLI for local task transitions.
-- `scripts/agent_worker.sh`: polling worker loop for specialist execution.
-- `scripts/agents_ctl.sh`: start/stop/status for background specialist workers.
-- `scripts/coordination_repair.sh`: backfill helper for missing coordination files/prompts and core lane scaffolding.
+The standalone coordinator has been extracted out of this repo. Do not reintroduce coordinator source-of-truth files here unless the user explicitly asks for a new integration design.
+
+## Primary Files
+- `Dockerfile`: single source of truth for the development image.
+- `README.md`: user-facing usage and scope.
+- `CHANGELOG.md`: notable behavior changes.
 - `scripts/toolbelt.sh`: host-side launcher for selective mounts into `/workspace/<basename>`.
-- `container/codex-init-workspace.sh`: image bootstrap script that seeds baseline coordination files into `/workspace`.
-- `container/codex-entrypoint.sh`: image entrypoint that prints startup MOTD with quick commands.
+- `container/codex-entrypoint.sh`: interactive MOTD and runtime bootstrap.
+- `container/codex-init-workspace.sh`: deprecated compatibility stub; no longer seeds coordinator assets.
+- `scripts/voice-stt-*.sh` and `scripts/voice_autotranscribe.py`: voice STT helpers baked into the image.
 
 ## Agent Goals
-When working in this repo, prioritize:
-1. Keeping the image broadly useful for common Python, Go, Rust, and Node.js workflows.
-2. Preserving deterministic, reproducible Docker builds.
-3. Verifying changes with real Docker build + runtime smoke checks.
-4. Using the local coordination workflow for multi-agent execution.
+1. Keep the image broadly useful for common Python, Node.js, Go, and Rust workflows.
+2. Preserve deterministic, reproducible Docker builds.
+3. Keep Docker access client-only via a mounted host socket.
+4. Keep the repo honest about the coordinator split: the image no longer ships coordinator assets.
 
 ## Required Validation After Dockerfile Changes
-After any edit to `Dockerfile.codex-dev`, run:
-1. `docker build -f Dockerfile.codex-dev -t toolbelt:latest .`
-2. `docker run --rm toolbelt:latest bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq codex codex-real'`
-3. `docker run --rm toolbelt:latest bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'`
+After any edit to `Dockerfile`, run:
+1. `docker build -t toolbelt:latest .`
+2. `docker run --rm toolbelt:latest bash -lc 'command -v node npm pnpm python3 pip3 uv poetry go rustc cargo rg fd jq yq http xh curlie codex codex-real docker docker-compose iptables && docker compose version && docker-compose --version && docker buildx version'`
+3. `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock toolbelt:latest bash -lc 'docker ps >/dev/null && docker compose version >/dev/null && docker-compose --version >/dev/null && docker buildx version >/dev/null'`
+4. `docker run --rm toolbelt:latest bash -c 'python3 -m venv /tmp/venv && /tmp/venv/bin/python -V && node -e "console.log(\"ok\")" && printf "package main\nfunc main(){}\n" >/tmp/main.go && go run /tmp/main.go && cargo new /tmp/rtest >/dev/null && cd /tmp/rtest && cargo check >/dev/null'`
 
 ## Change Guidelines
 - Keep the Codex wrapper behavior intact (`/usr/local/bin/codex` invoking `codex-real` with Docker guard).
-- Always tag the runtime image as `toolbelt:latest`; do not introduce alternate tags unless explicitly requested by the user.
-- Prefer official toolchain installs for Go/Rust unless explicitly directed otherwise.
-- Use `--no-install-recommends` for apt installs.
-- Clean apt lists to reduce layer size.
+- Always tag the runtime image as `toolbelt:latest` unless the user explicitly requests otherwise.
+- Prefer official toolchain installs for Go and Rust unless directed otherwise.
+- Use `--no-install-recommends` for apt installs and clean apt lists after installs.
 - Keep PATH behavior working in both non-login and login shells.
-- Keep all `scripts/*.sh` baked into `/opt/codex-baseline/scripts/` in `Dockerfile.codex-dev`; mounted `/workspace` may not contain project scripts until bootstrap.
-- Prefer wildcard script bake-in (`COPY scripts/*.sh /opt/codex-baseline/scripts/` plus `chmod +x /opt/codex-baseline/scripts/*.sh`) so newly added scripts are included automatically.
-- Keep startup MOTD listing all image-baked scripts from `/opt/codex-baseline/scripts/` using absolute paths.
-- After making project changes, update `README.md` to reflect the current behavior and usage.
-- Update `CHANGELOG.md` whenever behavior, tooling, or verification expectations change.
-
-## Local Multi-Agent Workflow
-- Create/initialize skill agents with `scripts/taskctl.sh ensure-agent <agent>`.
-- Repair missing coordination assets from older runs with `/opt/codex-baseline/scripts/coordination_repair.sh`.
-- For task-aware prompt tuning, run `scripts/taskctl.sh ensure-agent <agent> --task <TASK_ID|TASK_FILE>` (auto-refreshes unfit role prompts).
-- Create tasks using `scripts/taskctl.sh create <TASK_ID> <TITLE> --to <owner> --from <creator> --priority <N>`.
-- Delegate downstream work using `scripts/taskctl.sh delegate <from> <to> <TASK_ID> <TITLE> --priority <N> --parent <TASK_ID>`.
-- Agents claim tasks with `scripts/taskctl.sh claim <agent>` from `coordination/inbox/<agent>/<NNN>/`.
-- Agents only edit task files in `coordination/in_progress/<agent>/` during execution.
-- Finish with `scripts/taskctl.sh done <agent> <TASK_ID>` or `scripts/taskctl.sh block <agent> <TASK_ID> \"reason\"`.
-- Blocking automatically moves the task to `coordination/blocked/<agent>/<NNN>/` and creates a priority `000` blocker report task for the creator agent.
-- Run continuous background workers with `scripts/agents_ctl.sh start` and monitor with `scripts/agents_ctl.sh status`.
-- For execution environments that reap detached jobs between terminal calls, use one-shot parallel workers with `scripts/agents_ctl.sh once`.
-- Worker reasoning defaults: `pm`/`coordinator`/`architect` run with `xhigh`; other agents default to `none` reasoning effort. Customize with `AGENT_XHIGH_AGENTS`, `AGENT_PLANNER_REASONING_EFFORT`, and `AGENT_DEFAULT_REASONING_EFFORT` (`default`/`null` aliases normalize to `none`).
-- Use `coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md` for a reusable top-level orchestrator startup prompt; launch with `codex "$(cat /workspace/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md)"`.
-- Coordination scripts enforce Docker-only execution and require `/workspace`-scoped paths for roots/worker/taskctl scripts.
+- Keep all remaining `scripts/*.sh` baked into `/opt/codex-baseline/scripts/` via wildcard copy.
+- Keep startup MOTD listings aligned with the scripts actually baked into the image.
+- Update `README.md` and `CHANGELOG.md` whenever behavior or scope changes.
 
 ## Out of Scope Unless Asked
-- Multi-stage optimization or aggressive image-size reduction.
+- Rebuilding coordinator integration before the standalone coordinator repository is published and versioned.
+- Multi-stage image optimization.
 - Non-Debian base image migration.
-- CI pipeline or publish automation changes.
-
-## Notes
-- Expected base distribution is Debian Bookworm via `node:22-bookworm`.
-- `bash -lc` must continue resolving Go/Rust/Python CLI tools via profile path setup.
+- CI or publish automation changes.
