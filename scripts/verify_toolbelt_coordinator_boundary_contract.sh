@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="$(mktemp -d)"
-COORDINATOR_PROMPT_PATH="/workspace/coordinator/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md"
+COORDINATOR_PROMPT_PATH="${TMP_ROOT}/coordinator/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md"
 COORDINATOR_PROMPT_BACKUP=""
 
 cleanup() {
@@ -32,6 +32,29 @@ assert_not_contains() {
   local context="$3"
 
   [[ "${haystack}" != *"${needle}"* ]] || fail "${context}: unexpectedly found '${needle}'"
+}
+
+canonical_path() {
+  local path="$1"
+
+  if [[ -d "${path}" ]]; then
+    (
+      cd "${path}" >/dev/null 2>&1
+      pwd -P
+    )
+    return 0
+  fi
+
+  if command -v realpath >/dev/null 2>&1; then
+    if realpath -m / >/dev/null 2>&1; then
+      realpath -m "${path}"
+    else
+      realpath "${path}"
+    fi
+    return 0
+  fi
+
+  printf '%s\n' "${path}"
 }
 
 write_fake_docker() {
@@ -96,7 +119,10 @@ write_entrypoint_harness() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-source <(sed '/^bootstrap_codex_home\$/,\$d' "${REPO_ROOT}/container/codex-entrypoint.sh")
+source <(sed \
+  -e '/^bootstrap_codex_home\$/,\$d' \
+  -e 's|if \[\[ -f /workspace/coordinator/coordination/prompts/TOP_LEVEL_AGENT_PROMPT.md \]\]; then|if [[ -f "\${TEST_COORDINATOR_PROMPT_PATH:?missing TEST_COORDINATOR_PROMPT_PATH}" ]]; then|' \
+  "${REPO_ROOT}/container/codex-entrypoint.sh")
 show_motd "\$@"
 EOF
 
@@ -157,7 +183,7 @@ run_entrypoint_case() {
   local output_path="${TMP_ROOT}/${scenario}.pty.log"
 
   set +e
-  capture_pty_output "${output_path}" env NO_COLOR=1 bash "${harness_path}" bash
+  capture_pty_output "${output_path}" env NO_COLOR=1 TEST_COORDINATOR_PROMPT_PATH="${COORDINATOR_PROMPT_PATH}" bash "${harness_path}" bash
   CASE_STATUS=$?
   set -e
 
@@ -205,6 +231,9 @@ run_init_case() {
 
 trap cleanup EXIT
 
+mkdir -p "$(dirname "${COORDINATOR_PROMPT_PATH}")"
+printf '# test coordinator prompt\n' >"${COORDINATOR_PROMPT_PATH}"
+
 README_TEXT="$(cat "${REPO_ROOT}/README.md")"
 assert_contains "${README_TEXT}" 'coordinator/orchestration source of truth lives in the standalone `/workspace/coordinator` repository for this phase' "README top-level boundary"
 assert_contains "${README_TEXT}" 'hard cutover is complete; `toolbelt` only references the external coordinator checkout' "README steady-state boundary"
@@ -216,12 +245,12 @@ assert_not_contains "${README_TEXT}" 'intentionally left as a TODO' "README stal
 
 run_toolbelt_case default-mount
 [[ "${CASE_STATUS}" -eq 0 ]] || fail "default mount should succeed"
-assert_contains "${CASE_DOCKER_LOG}" "-v ${TMP_ROOT}/default-mount/cwd:/workspace" "default mount docker args"
+assert_contains "${CASE_DOCKER_LOG}" "-v $(canonical_path "${TMP_ROOT}/default-mount/cwd"):/workspace" "default mount docker args"
 
 mkdir -p "${TMP_ROOT}/mounts/coordinator"
 run_toolbelt_case coordinator-mount "${TMP_ROOT}/mounts/coordinator"
 [[ "${CASE_STATUS}" -eq 0 ]] || fail "coordinator mount should succeed"
-assert_contains "${CASE_DOCKER_LOG}" "-v ${TMP_ROOT}/mounts/coordinator:/workspace/coordinator" "coordinator mount docker args"
+assert_contains "${CASE_DOCKER_LOG}" "-v $(canonical_path "${TMP_ROOT}/mounts/coordinator"):/workspace/coordinator" "coordinator mount docker args"
 
 mkdir -p "${TMP_ROOT}/collision/a/coordinator" "${TMP_ROOT}/collision/b/coordinator"
 run_toolbelt_case collision "${TMP_ROOT}/collision/a/coordinator" "${TMP_ROOT}/collision/b/coordinator"
