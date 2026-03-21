@@ -95,8 +95,18 @@ Behavior summary:
 - `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud`.
 - `-gws` / `--gws` mounts host `~/.config/gws`, exports portable host `gws` credentials when available, and sets `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/run/secrets/gws-credentials/credentials.json` inside the container.
 - `-gws` / `--gws` still hydrates `~/.config/gws` for compatibility and uses ADC as fallback when exported credentials are unavailable.
+- Current status: direct `gws` support in the container is still experimental/incomplete; the scope-guard flow below improves diagnostics but is not yet treated as a fully validated end-to-end path.
+- Direct `gws <service> <resource> <method>` commands launched through `scripts/toolbelt.sh -gws -- ...` now attempt a host-side scope preflight; confirmed scope mismatches fail before `docker run` with a re-auth hint such as `gws auth login -s drive`.
+- Shell-wrapped launcher commands such as `-- bash -lc 'gws ...'` intentionally skip host-side scope preflight because the launcher cannot infer the eventual `gws` method safely.
+- After rebuilding the image, the container entrypoint also installs an experimental `gws` wrapper that preflights direct in-container `gws <service> <resource> <method>` calls and appends a scope hint if a raw `403 insufficientPermissions` still bubbles up.
 - `-k8s` / `--k8s` mounts host `~/.kube/config` read-only to `/run/secrets/kube-config`; entrypoint hydrates `/root/.kube/config`.
 - Override credential source paths with `CODEX_GCLOUD_CONFIG_SRC`, `CODEX_GWS_CONFIG_SRC`, and `CODEX_KUBECONFIG_SRC`.
+
+Troubleshooting:
+- `401` or `No credentials provided` means the launcher could not export or hydrate usable credentials.
+- A fast launcher failure naming required/granted scopes means the host `gws` login is missing consent for that API.
+- A `403 insufficientPermissions` returned from inside the container still means the OAuth grant is under-scoped; re-run `gws auth login -s <service>` on the host and retry.
+- Even when the guardrails fire correctly, treat direct in-container `gws` usage as incomplete until it has been proven against a real auth flow in a rebuilt image.
 
 ## Coordinator Split
 

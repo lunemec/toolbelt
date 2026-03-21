@@ -5,6 +5,8 @@ CODEX_HOME="${CODEX_HOME:-/root/.codex}"
 AUTH_SRC="${CODEX_AUTH_JSON_SRC:-/run/secrets/codex-auth.json}"
 CONFIG_SRC="${CODEX_CONFIG_TOML_SRC:-/run/secrets/codex-config.toml}"
 GCLOUD_CONFIG_SRC="${GCLOUD_CONFIG_SRC:-/run/secrets/gcloud-config}"
+GWS_CONFIG_SRC="${GWS_CONFIG_SRC:-/run/secrets/gws-config}"
+GWS_CREDENTIALS_SRC="${GWS_CREDENTIALS_SRC:-/run/secrets/gws-credentials}"
 KUBECONFIG_SRC="${KUBECONFIG_SRC:-/run/secrets/kube-config}"
 
 copy_secret() {
@@ -58,16 +60,44 @@ bootstrap_codex_home() {
   unset OPENAI_API_KEY || true
 }
 
-bootstrap_cloud_and_k8s_home() {
+bootstrap_cloud_tool_homes() {
   local gcloud_home="${CLOUDSDK_CONFIG:-/root/.config/gcloud}"
+  local gws_home="${GOOGLE_WORKSPACE_CLI_CONFIG_DIR:-/root/.config/gws}"
   local kube_home="/root/.kube"
 
   mkdir -p "$(dirname "${gcloud_home}")"
   copy_secret_tree "${GCLOUD_CONFIG_SRC}" "${gcloud_home}" || true
 
+  mkdir -p "$(dirname "${gws_home}")" "${gws_home}"
+  copy_secret_tree "${GWS_CONFIG_SRC}" "${gws_home}" || true
+  copy_secret "${GWS_CREDENTIALS_SRC}" "credentials.json" "${gws_home}/credentials.json" || true
+
   mkdir -p "${kube_home}"
   chmod 700 "${kube_home}" 2>/dev/null || true
   copy_secret "${KUBECONFIG_SRC}" "config" "${kube_home}/config" || true
+}
+
+install_gws_wrapper() {
+  local existing_gws_path=""
+  local real_gws_path="/usr/local/bin/gws-real"
+  local wrapper_path="/usr/local/bin/gws"
+  local wrapper_src="/opt/codex-baseline/scripts/gws-scope-guard.sh"
+
+  [[ -x "${wrapper_src}" ]] || return 0
+
+  existing_gws_path="$(command -v gws 2>/dev/null || true)"
+  if [[ -z "${existing_gws_path}" && ! -x "${real_gws_path}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -x "${real_gws_path}" ]]; then
+    if [[ "${existing_gws_path}" != "${wrapper_path}" ]]; then
+      return 0
+    fi
+    mv "${wrapper_path}" "${real_gws_path}"
+  fi
+
+  ln -sf "${wrapper_src}" "${wrapper_path}"
 }
 
 describe_script() {
@@ -193,7 +223,8 @@ show_motd() {
 }
 
 bootstrap_codex_home
-bootstrap_cloud_and_k8s_home
+bootstrap_cloud_tool_homes
+install_gws_wrapper
 show_motd "$@"
 
 exec "$@"

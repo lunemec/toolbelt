@@ -16,6 +16,9 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - `scripts/verify_toolbelt_coordinator_boundary_contract.sh` contract verifier for steady-state coordinator boundary messaging, launcher mount semantics, entrypoint external-checkout detection, and `codex-init-workspace` redirect behavior.
+- Experimental/incomplete `scripts/gws-scope-guard.sh` image-baked `gws` wrapper that preflights Workspace API scopes for direct in-container `gws` calls and adds a targeted hint when `403 insufficientPermissions` still reaches the user.
+- `scripts/verify_gws_scope_guard_contract.sh` contract verifier for the experimental in-container `gws` scope guard, including mismatch blocking and fallback 403 hinting.
+- `scripts/verify_toolbelt_gws_scope_contract.sh` contract verifier for experimental direct-`gws` scope preflight behavior, mismatch blocking, and best-effort warning fallback when schema lookup fails.
 - New `taskctl` benchmark command: `benchmark-audit-chain`, which validates benchmark evidence integrity across parent/child strict-phase tasks.
 - New `taskctl` benchmark command: `benchmark-init`, which backfills benchmark metadata defaults and scaffolds strict Result templates (requirements, gates, scores, command blocks, and `Log Hash` placeholders).
 - New `taskctl create/delegate` benchmark options: `--benchmark-profile`, `--benchmark-workdir`, `--gate-target`, `--scorecard-artifact`, `--benchmark-opt-out-reason`, and `--no-benchmark-inherit`.
@@ -53,6 +56,8 @@ All notable changes to this project are documented in this file.
 ### Changed
 - `scripts/toolbelt.sh -gws/--gws` now exports portable host `gws` credentials with `gws auth export --unmasked`, mounts them read-only, and `/usr/local/bin/codex-entrypoint` hydrates them into in-container `~/.config/gws/credentials.json` without modifying host files; host ADC from `~/.config/gcloud/application_default_credentials.json` remains the fallback when export is unavailable.
 - `scripts/toolbelt.sh -gws/--gws` now fails fast with actionable guidance when neither portable `gws` credentials nor ADC are available, instead of deferring to an in-container `401 Access denied. No credentials provided` failure.
+- `scripts/toolbelt.sh -gws/--gws` now attempts OAuth scope preflight for direct `gws <service> <resource> <method>` commands before `docker run`; confirmed mismatches fail fast with required/granted scope details and a host re-auth hint, while lookup failures degrade to a warning and still launch the container. This path is not yet fully validated end-to-end inside the container.
+- `/usr/local/bin/codex-entrypoint` now installs the experimental image-baked `gws` wrapper so interactive in-container `gws` calls can surface the same scope diagnosis as one-shot launcher commands after the image is rebuilt.
 - `README.md` now documents that `gws auth status` inside the container should reflect hydrated plaintext/runtime credentials, and that `403 insufficientPermissions` indicates missing OAuth scopes in the host `gws` login rather than a failed mount.
 - The development image file is now `Dockerfile` instead of `Dockerfile.codex-dev`, and image build docs/scripts now default to `docker build -t toolbelt:latest .`.
 - The development image now uses `node:22-trixie` and Debian Trixie packages for Docker client tooling (`docker`, `docker buildx`, Compose v2 via `docker compose` and `docker-compose`) instead of Bookworm `docker.io` plus a manually downloaded Compose plugin wrapper.
