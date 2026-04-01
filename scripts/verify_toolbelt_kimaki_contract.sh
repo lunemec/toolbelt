@@ -134,6 +134,8 @@ trap cleanup EXIT
 
 run_toolbelt_case default-mount default -kimaki
 [[ "${CASE_STATUS}" -eq 0 ]] || fail "default-mount should succeed"
+assert_contains "${CASE_DOCKER_LOG}" "-e TOOLBELT_HOST_UID=$(id -u)" "default host uid propagation"
+assert_contains "${CASE_DOCKER_LOG}" "-e TOOLBELT_HOST_GID=$(id -g)" "default host gid propagation"
 assert_contains "${CASE_DOCKER_LOG}" "-v $(canonical_path "${TMP_ROOT}/default-mount/cwd"):$(canonical_path "${TMP_ROOT}/default-mount/cwd")" "default workspace mount"
 assert_contains "${CASE_DOCKER_LOG}" "-v $(canonical_path "${TMP_ROOT}/default-mount/home/.config/opencode"):/run/secrets/opencode-config:ro" "default implied opencode mount"
 assert_contains "${CASE_DOCKER_LOG}" "-v $(canonical_path "${TMP_ROOT}/default-mount/home/.kimaki"):/home/coder/.kimaki" "default kimaki mount"

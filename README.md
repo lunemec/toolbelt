@@ -37,7 +37,7 @@ The `claude` wrapper is preserved as:
 
 On the host machine:
 - Docker Engine running
-- Access to `/var/run/docker.sock` when you want the container to control the host Docker daemon
+- Access to `/var/run/docker.sock` when you want the container to control the host Docker daemon; `scripts/toolbelt.sh -docker` now aligns the in-container `coder` user to the invoking host UID/GID and the socket group so `docker` works without `sudo`
 
 The image ships client-side Docker tooling only. It is intended to talk to a mounted host Docker socket, not to run `dockerd` inside the container.
 
@@ -112,10 +112,11 @@ Behavior summary:
 - A provider subcommand (`codex`, `claude`, or `forge`) is required as the first argument.
 - If no positional paths are provided, the current directory is mounted at `/workspace`.
 - Each positional path becomes one mount at `/workspace/<basename(path)>`.
-- Docker socket is opt-in via `-docker` / `--docker`.
+- Docker socket is opt-in via `-docker` / `--docker`, and the launcher/entrypoint now align `coder` to the invoking host UID/GID plus the mounted socket group so `docker` works without `sudo` in the container, including macOS runtimes where the host-reported socket GID differs from the in-container bind mount.
 - `codex` provider: `/root/.codex` is mounted as tmpfs (`512m` default); `~/.codex/auth.json` and `~/.codex/config.toml` are mounted read-only when present.
 - `claude` provider: `~/.claude/` is mounted read-only to `/run/secrets/claude-config`; `ANTHROPIC_API_KEY` is passed through when set on the host.
 - `forge` provider: `~/forge/` is mounted read-only to `/run/secrets/forge-config`; entrypoint hydrates `/home/coder/.forge/`.
+- Writable direct host mounts such as workspace paths, direct Claude config mounts, and `-kimaki` now inherit the invoking host UID/GID via the entrypoint so routine writes do not require `sudo`.
 - `-forge` / `--forge` (claude provider only): co-mounts ForgeCode config alongside Claude config so both CLIs are available with credentials in the same session.
 - `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud`.
 - `-gws` / `--gws` mounts host `~/.config/gws`, exports portable host `gws` credentials when available, and sets `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/run/secrets/gws-credentials/credentials.json` inside the container.
@@ -158,6 +159,7 @@ The image bakes every `scripts/*.sh` file from this repo into `/opt/toolbelt/scr
 - `scripts/toolbelt.sh`
 - `scripts/gws-scope-guard.sh`
 - `scripts/verify_gws_scope_guard_contract.sh`
+- `scripts/verify_toolbelt_docker_contract.sh`
 - `scripts/verify_toolbelt_kimaki_contract.sh`
 - `scripts/verify_toolbelt_opencode_contract.sh`
 - `scripts/verify_toolbelt_opencode_runtime_contract.sh`
@@ -171,6 +173,7 @@ The image bakes every `scripts/*.sh` file from this repo into `/opt/toolbelt/scr
 For contract verification without rebuilding the image:
 
 ```bash
+./scripts/verify_toolbelt_docker_contract.sh
 ./scripts/verify_toolbelt_kimaki_contract.sh
 ./scripts/verify_toolbelt_opencode_contract.sh
 ./scripts/verify_toolbelt_opencode_runtime_contract.sh
@@ -199,6 +202,7 @@ toolbelt/
     ├── gws-scope-guard.sh
     ├── toolbelt.sh
     ├── verify_gws_scope_guard_contract.sh
+    ├── verify_toolbelt_docker_contract.sh
     ├── verify_toolbelt_gws_scope_contract.sh
     ├── verify_toolbelt_kimaki_contract.sh
     ├── verify_toolbelt_opencode_contract.sh

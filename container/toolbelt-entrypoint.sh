@@ -2,6 +2,9 @@
 set -euo pipefail
 
 TOOLBELT_HOST_HOME="${TOOLBELT_HOST_HOME:-}"
+TOOLBELT_HOST_UID="${TOOLBELT_HOST_UID:-}"
+TOOLBELT_HOST_GID="${TOOLBELT_HOST_GID:-}"
+TOOLBELT_DOCKER_SOCK_GID="${TOOLBELT_DOCKER_SOCK_GID:-}"
 CODER_HOME="${TOOLBELT_HOST_HOME:-/home/coder}"
 CODEX_HOME="${CODEX_HOME:-${CODER_HOME}/.codex}"
 AUTH_SRC="${CODEX_AUTH_JSON_SRC:-/run/secrets/codex-auth.json}"
@@ -22,6 +25,150 @@ TOOLBELT_WITH_FORGE="${TOOLBELT_WITH_FORGE:-}"
 
 warn() {
   printf 'warning: %s\n' "$*" >&2
+}
+
+is_numeric_id() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+numeric_gid_for_path() {
+  local path="$1"
+
+  if stat -c '%g' "${path}" >/dev/null 2>&1; then
+    stat -c '%g' "${path}"
+    return 0
+  fi
+
+  if stat -f '%g' "${path}" >/dev/null 2>&1; then
+    stat -f '%g' "${path}"
+    return 0
+  fi
+
+  return 1
+}
+
+resolved_docker_socket_gid() {
+  local socket_gid=""
+
+  [[ -S /var/run/docker.sock ]] || return 1
+
+  socket_gid="$(numeric_gid_for_path /var/run/docker.sock 2>/dev/null || true)"
+  if is_numeric_id "${socket_gid}"; then
+    printf '%s\n' "${socket_gid}"
+    return 0
+  fi
+
+  if is_numeric_id "${TOOLBELT_DOCKER_SOCK_GID}"; then
+    printf '%s\n' "${TOOLBELT_DOCKER_SOCK_GID}"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_group_for_gid() {
+  local preferred_name="$1"
+  local target_gid="$2"
+  local existing_group=""
+
+  is_numeric_id "${target_gid}" || return 1
+
+  existing_group="$(getent group "${target_gid}" | cut -d: -f1 | head -n 1 || true)"
+  if [[ -n "${existing_group}" ]]; then
+    printf '%s\n' "${existing_group}"
+    return 0
+  fi
+
+  if getent group "${preferred_name}" >/dev/null 2>&1; then
+    groupmod -g "${target_gid}" "${preferred_name}" >/dev/null 2>&1 || return 1
+  else
+    groupadd -g "${target_gid}" "${preferred_name}" >/dev/null 2>&1 || return 1
+  fi
+
+  printf '%s\n' "${preferred_name}"
+}
+
+align_coder_identity() {
+  local primary_group=""
+  local existing_uid_user=""
+
+  if ! is_numeric_id "${TOOLBELT_HOST_UID}" || ! is_numeric_id "${TOOLBELT_HOST_GID}"; then
+    return 0
+  fi
+
+  primary_group="$(ensure_group_for_gid coder "${TOOLBELT_HOST_GID}")" || {
+    warn "failed to align coder primary group to host gid ${TOOLBELT_HOST_GID}"
+    return 0
+  }
+
+  existing_uid_user="$(getent passwd "${TOOLBELT_HOST_UID}" | cut -d: -f1 | head -n 1 || true)"
+  if [[ -n "${existing_uid_user}" && "${existing_uid_user}" != "coder" ]]; then
+    usermod -o -u "${TOOLBELT_HOST_UID}" coder >/dev/null 2>&1 || {
+      warn "failed to align coder uid to host uid ${TOOLBELT_HOST_UID}"
+      return 0
+    }
+  elif [[ "$(id -u coder)" != "${TOOLBELT_HOST_UID}" ]]; then
+    usermod -u "${TOOLBELT_HOST_UID}" coder >/dev/null 2>&1 || {
+      warn "failed to align coder uid to host uid ${TOOLBELT_HOST_UID}"
+      return 0
+    }
+  fi
+
+  if [[ "$(id -g coder)" != "${TOOLBELT_HOST_GID}" ]]; then
+    usermod -g "${primary_group}" coder >/dev/null 2>&1 || {
+      warn "failed to align coder gid to host gid ${TOOLBELT_HOST_GID}"
+      return 0
+    }
+  fi
+}
+
+configure_docker_socket_access() {
+  local socket_group=""
+  local socket_gid=""
+
+  socket_gid="$(resolved_docker_socket_gid)" || return 0
+
+  socket_group="$(ensure_group_for_gid toolbelt-docker "${socket_gid}")" || {
+    warn "failed to align docker socket group to gid ${socket_gid}"
+    return 0
+  }
+
+  case " $(id -nG coder) " in
+    *" ${socket_group} "*)
+      return 0
+      ;;
+  esac
+
+  usermod -aG "${socket_group}" coder >/dev/null 2>&1 || warn "failed to add coder to docker socket group ${socket_group}"
+}
+
+build_coder_setpriv_group_args() {
+  local primary_gid="$1"
+  local docker_socket_gid=""
+  local gid=""
+  local -a supplementary_gids=()
+  local -A seen_gids=()
+
+  while IFS= read -r gid; do
+    [[ -n "${gid}" && "${gid}" != "${primary_gid}" ]] || continue
+    if [[ -z "${seen_gids[${gid}]:-}" ]]; then
+      supplementary_gids+=("${gid}")
+      seen_gids["${gid}"]=1
+    fi
+  done < <(id -G coder | tr ' ' '\n')
+
+  docker_socket_gid="$(resolved_docker_socket_gid 2>/dev/null || true)"
+  if is_numeric_id "${docker_socket_gid}" && [[ "${docker_socket_gid}" != "${primary_gid}" ]]; then
+    if [[ -z "${seen_gids[${docker_socket_gid}]:-}" ]]; then
+      supplementary_gids+=("${docker_socket_gid}")
+    fi
+  fi
+
+  if [[ ${#supplementary_gids[@]} -gt 0 ]]; then
+    printf '%s\n' "--groups=$(IFS=,; printf '%s' "${supplementary_gids[*]}")"
+  else
+    printf '%s\n' "--clear-groups"
+  fi
 }
 
 copy_secret() {
@@ -413,10 +560,9 @@ fi
 bootstrap_cloud_tool_homes
 bootstrap_opencode_home
 install_gws_wrapper
+align_coder_identity
+configure_docker_socket_access
 show_motd "$@"
-
-# Bootstrap-only env vars -- keep them out of the interactive shell.
-unset TOOLBELT_MOUNTS TOOLBELT_FEATURES 2>/dev/null || true
 
 # When TOOLBELT_HOST_HOME is set, use it as HOME so that both ~/... and
 # /Users/<user>/... paths resolve correctly inside the container.
@@ -437,8 +583,12 @@ if [[ -n "${TOOLBELT_HOST_HOME}" && "${TOOLBELT_HOST_HOME}" != "/home/coder" ]];
 fi
 
 # Hand ownership of coder's home to coder (covers bootstrap-created files).
-chown -R coder:coder "${CODER_HOME}" 2>/dev/null || true
+CODER_UID="$(id -u coder)"
+CODER_GID="$(id -g coder)"
+CODER_GROUP_ARGS="$(build_coder_setpriv_group_args "${CODER_GID}")"
+chown -R "${CODER_UID}:${CODER_GID}" "${CODER_HOME}" 2>/dev/null || true
 
 # Drop from root to coder for the actual workload.
-exec setpriv --reuid=coder --regid=coder --init-groups \
-  env HOME="${CODER_HOME}" "$@"
+exec setpriv --reuid="${CODER_UID}" --regid="${CODER_GID}" ${CODER_GROUP_ARGS} \
+  env -u TOOLBELT_MOUNTS -u TOOLBELT_FEATURES -u TOOLBELT_HOST_UID -u TOOLBELT_HOST_GID -u TOOLBELT_DOCKER_SOCK_GID \
+  HOME="${CODER_HOME}" "$@"

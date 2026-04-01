@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 ### Fixed
+- `scripts/toolbelt.sh -docker/--docker` sessions no longer require `sudo docker` inside the container. The launcher now passes the invoking host UID/GID plus the mounted socket GID, and `container/toolbelt-entrypoint.sh` aligns `coder` before dropping privileges so `/var/run/docker.sock` is usable directly, including runtimes where the bind-mounted socket reports a different GID inside the container than it does on the host.
+- Writable direct host mounts now follow the invoking host UID/GID instead of the baked image defaults, which also fixes `-kimaki/--kimaki` sessions needing `sudo` for normal writes and improves parity for direct workspace and Claude config mounts.
 - ForgeCode config mounting changed from direct bind-mount at `/home/coder/forge` to read-only secrets mount at `/run/secrets/forge-config:ro` with `copy_secret_tree` hydration into `${CODER_HOME}/forge`. Fixes `rm: cannot remove '/home/coder/forge': Device or resource busy` crash caused by the bind mount blocking the entrypoint's `/home/coder` symlink-replacement logic when `TOOLBELT_HOST_HOME` is set.
 
 ### Changed
@@ -35,6 +37,7 @@ All notable changes to this project are documented in this file.
 - Coordinator quickstart/bootstrap documentation from `toolbelt` README and AGENTS guidance.
 
 ### Added
+- `scripts/verify_toolbelt_docker_contract.sh` contract verifier for `-docker/--docker` launcher env propagation, Docker socket mounting, and host UID/GID handoff.
 - ForgeCode (`forge`) binary installed in the development image from upstream GitHub releases (pinned version via `FORGE_VERSION` build arg).
 - Global npm install for `opencode-ai` in the development image.
 - Global npm install for `kimaki` in the development image.

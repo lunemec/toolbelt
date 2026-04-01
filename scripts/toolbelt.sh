@@ -137,6 +137,22 @@ PY
   fi
 }
 
+numeric_gid_for_path() {
+  local path="$1"
+
+  if stat -c '%g' "$path" >/dev/null 2>&1; then
+    stat -c '%g' "$path"
+    return 0
+  fi
+
+  if stat -f '%g' "$path" >/dev/null 2>&1; then
+    stat -f '%g' "$path"
+    return 0
+  fi
+
+  return 1
+}
+
 require_docker() {
   command -v docker >/dev/null 2>&1 || {
     echo "docker command not found" >&2
@@ -802,9 +818,21 @@ build_mount_args() {
 
 build_env_args() {
   local -a args=()
+  local host_uid host_gid docker_sock_gid=""
+
+  host_uid="$(id -u)"
+  host_gid="$(id -g)"
 
   args+=( -e "TOOLBELT_PROVIDER=${PROVIDER}" )
   args+=( -e "TOOLBELT_HOST_HOME=${HOME}" )
+  args+=( -e "TOOLBELT_HOST_UID=${host_uid}" )
+  args+=( -e "TOOLBELT_HOST_GID=${host_gid}" )
+
+  if [[ "$WITH_DOCKER_SOCK" -eq 1 ]]; then
+    if docker_sock_gid="$(numeric_gid_for_path /var/run/docker.sock 2>/dev/null)"; then
+      args+=( -e "TOOLBELT_DOCKER_SOCK_GID=${docker_sock_gid}" )
+    fi
+  fi
 
   # Pass workspace mount metadata so the entrypoint MOTD can display them.
   local mount_pairs="" abs_src
