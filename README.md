@@ -49,15 +49,13 @@ The image ships client-side Docker tooling only. It is intended to talk to a mou
 docker build -t toolbelt:latest .
 ```
 
-2. Run an interactive container with your current repository, ephemeral Codex state, mounted auth/config inputs, and optional host Docker access:
+2. Run an interactive container with your current repository, mounted auth/config inputs, and optional host Docker access:
 
 ```bash
 docker run --rm -it \
   -v "$PWD":/workspace \
   -w /workspace \
-  --tmpfs /root/.codex:rw,nosuid,nodev,size=512m \
-  -v "$HOME/.codex/auth.json:/run/secrets/codex-auth.json:ro" \
-  -v "$HOME/.codex/config.toml:/run/secrets/codex-config.toml:ro" \
+  -v "$HOME/.codex:/run/secrets/codex-config:ro" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   toolbelt:latest
 ```
@@ -113,7 +111,7 @@ Behavior summary:
 - If no positional paths are provided, the current directory is mounted at `/workspace`.
 - Each positional path becomes one mount at `/workspace/<basename(path)>`.
 - Docker socket is opt-in via `-docker` / `--docker`, and the launcher/entrypoint now align `coder` to the invoking host UID/GID plus the mounted socket group so `docker` works without `sudo` in the container, including macOS runtimes where the host-reported socket GID differs from the in-container bind mount.
-- `codex` provider: `/root/.codex` is mounted as tmpfs (`512m` default); `~/.codex/auth.json` and `~/.codex/config.toml` are mounted read-only when present.
+- `codex` provider: `~/.codex/` is mounted read-only to `/run/secrets/codex-config`; entrypoint hydrates `$CODER_HOME/.codex/`.
 - `claude` provider: `~/.claude/` is mounted read-only to `/run/secrets/claude-config`; `ANTHROPIC_API_KEY` is passed through when set on the host.
 - `forge` provider: `~/forge/` is mounted read-only to `/run/secrets/forge-config`; entrypoint hydrates `/home/coder/.forge/`.
 - Writable direct host mounts such as workspace paths and `-kimaki` now inherit the invoking host UID/GID via the entrypoint so routine writes do not require `sudo`.
@@ -159,6 +157,7 @@ The image bakes every `scripts/*.sh` file from this repo into `/opt/toolbelt/scr
 - `scripts/toolbelt.sh`
 - `scripts/gws-scope-guard.sh`
 - `scripts/verify_gws_scope_guard_contract.sh`
+- `scripts/verify_toolbelt_claude_contract.sh`
 - `scripts/verify_toolbelt_docker_contract.sh`
 - `scripts/verify_toolbelt_kimaki_contract.sh`
 - `scripts/verify_toolbelt_opencode_contract.sh`
@@ -173,6 +172,7 @@ The image bakes every `scripts/*.sh` file from this repo into `/opt/toolbelt/scr
 For contract verification without rebuilding the image:
 
 ```bash
+./scripts/verify_toolbelt_claude_contract.sh
 ./scripts/verify_toolbelt_docker_contract.sh
 ./scripts/verify_toolbelt_kimaki_contract.sh
 ./scripts/verify_toolbelt_opencode_contract.sh

@@ -4,7 +4,6 @@ set -euo pipefail
 DEFAULT_IMAGE="${TOOLBELT_IMAGE:-toolbelt:latest}"
 DEFAULT_SHELL="${TOOLBELT_SHELL:-bash}"
 DEFAULT_WORKDIR="/workspace"
-DEFAULT_TMPFS_SIZE="${TOOLBELT_TMPFS_SIZE:-512m}"
 GWS_CREDENTIALS_MOUNT="/run/secrets/gws-credentials"
 GWS_CREDENTIALS_DEST="${GWS_CREDENTIALS_MOUNT}/credentials.json"
 GWS_ADC_MOUNT="/run/secrets/gws-adc"
@@ -25,7 +24,6 @@ WITH_GITHUB=0
 WITH_GITLAB=0
 WITH_FORGE=0
 AUTO_REMOVE=1
-TMPFS_SIZE="$DEFAULT_TMPFS_SIZE"
 MOUNTS=()
 MOUNT_PWD_TO_WORKSPACE=0
 CMD=()
@@ -61,7 +59,7 @@ Description:
   Each provided directory/path is mounted to /workspace/<basename(path)>.
 
 Providers:
-  codex                 Mount Codex credentials (~/.codex/auth.json, config.toml)
+  codex                 Mount Codex config (~/.codex/) read-only; hard-copied at startup
   claude                Mount Claude config (~/.claude/) read-only; config is hard-copied
                         into the container at startup and changes do not persist to the host
   forge                 Mount ForgeCode config (~/forge/) for multi-provider AI coding
@@ -83,15 +81,12 @@ Options:
                      Container working directory (default: /workspace)
   -shell, --shell SHELL
                      Default interactive shell when no CMD is provided (default: bash)
-  -tmpfs-size, --tmpfs-size SIZE
-                     /home/coder/.codex tmpfs size (default: 512m)
   -keep, --keep       Keep container after exit (omit --rm)
   -h, -help, --help   Show this help
 
 Environment overrides:
   TOOLBELT_IMAGE
   TOOLBELT_SHELL
-  TOOLBELT_TMPFS_SIZE
   TOOLBELT_CODEX_AUTH_SRC
   TOOLBELT_CODEX_CONFIG_SRC
   TOOLBELT_CLAUDE_DIR_SRC
@@ -633,7 +628,9 @@ parse_args() {
         shift 2
         ;;
       -tmpfs-size|--tmpfs-size)
-        TMPFS_SIZE="$2"
+        # Deprecated no-op: Codex now uses RO secret-mount + hard-copy like
+        # all other providers. The tmpfs overlay has been removed. Flag kept
+        # for backward compatibility with existing scripts.
         shift 2
         ;;
       -keep|--keep)
@@ -692,11 +689,20 @@ build_mount_args() {
   done
 
   if [[ "$PROVIDER" == "codex" ]]; then
-    if [[ -f "$AUTH_SRC" ]]; then
-      args+=( -v "${AUTH_SRC}:/run/secrets/codex-auth.json:ro" )
-    fi
-    if [[ -f "$CONFIG_SRC" ]]; then
-      args+=( -v "${CONFIG_SRC}:/run/secrets/codex-config.toml:ro" )
+    # Unified RO secret-mount pattern: mount entire ~/.codex/ directory.
+    # Fall back to individual file mounts for backward compatibility with
+    # non-standard TOOLBELT_CODEX_AUTH_SRC / TOOLBELT_CODEX_CONFIG_SRC paths.
+    local codex_abs_source
+    codex_abs_source="$(abs_path "$(dirname "$AUTH_SRC")")"
+    if [[ -d "$codex_abs_source" ]]; then
+      args+=( -v "${codex_abs_source}:/run/secrets/codex-config:ro" )
+    else
+      if [[ -f "$AUTH_SRC" ]]; then
+        args+=( -v "${AUTH_SRC}:/run/secrets/codex-auth.json:ro" )
+      fi
+      if [[ -f "$CONFIG_SRC" ]]; then
+        args+=( -v "${CONFIG_SRC}:/run/secrets/codex-config.toml:ro" )
+      fi
     fi
   elif [[ "$PROVIDER" == "claude" ]]; then
     local claude_abs_source claude_json_abs_source
@@ -929,10 +935,6 @@ run_container() {
     run
     -w "$WORKDIR"
   )
-
-  if [[ "$PROVIDER" == "codex" ]]; then
-    run_args+=( --tmpfs "/home/coder/.codex:rw,nosuid,nodev,size=${TMPFS_SIZE}" )
-  fi
 
   if [[ "$AUTO_REMOVE" -eq 1 ]]; then
     run_args+=( --rm )

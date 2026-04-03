@@ -11,13 +11,14 @@ All notable changes to this project are documented in this file.
 - ForgeCode config mounting changed from direct bind-mount at `/home/coder/forge` to read-only secrets mount at `/run/secrets/forge-config:ro` with `copy_secret_tree` hydration into `${CODER_HOME}/forge`. Fixes `rm: cannot remove '/home/coder/forge': Device or resource busy` crash caused by the bind mount blocking the entrypoint's `/home/coder` symlink-replacement logic when `TOOLBELT_HOST_HOME` is set.
 
 ### Changed
+- Codex provider now uses the same RO secret-mount + hard-copy hydration pattern as Claude and ForgeCode. The tmpfs overlay at `/home/coder/.codex` has been removed. The `-tmpfs-size` flag is now a deprecated no-op.
 - `scripts/toolbelt.sh` now requires a provider subcommand (`codex`, `claude`, or `forge`) as the first argument; running bare `toolbelt` without a provider errors with usage help.
 - `claude` binary is now wrapped: `/usr/local/bin/claude` invokes `claude-real` with Docker guard and `--dangerously-skip-permissions` (same pattern as the `codex` wrapper). The entrypoint drops to `coder` (UID 1000), so the root restriction no longer applies. The unwrapped binary is available as `claude-real`.
 - `scripts/toolbelt.sh` now supports `forge` as a third provider, mounting host `~/forge/` read-only for ForgeCode credentials.
 - `scripts/toolbelt.sh` now supports `-forge` / `--forge` flag (claude provider only) to co-mount ForgeCode config alongside Claude config in the same session.
 - `container/toolbelt-entrypoint.sh` now includes `bootstrap_forge_home()` to hydrate ForgeCode config from `/run/secrets/forge-config` into the coder user's home.
 - Container MOTD now stays compact by focusing on workspace mounts and enabled features, without listing baked helper or verification scripts by default.
-- `codex` provider mounts Codex credentials and `/root/.codex` tmpfs as before; `claude` provider mounts `~/.claude/` read-only and passes `ANTHROPIC_API_KEY` into the container.
+- All three AI provider mounts (`codex`, `claude`, `forge`) now use the unified RO secret-mount + hard-copy hydration pattern; `ANTHROPIC_API_KEY` is passed through for the `claude` provider.
 - `container/toolbelt-entrypoint.sh` now reads `TOOLBELT_PROVIDER` to conditionally bootstrap only the selected provider's home directory.
 - Launcher environment overrides renamed from `CODEX_*` to `TOOLBELT_*` (e.g. `CODEX_DEV_IMAGE` → `TOOLBELT_IMAGE`, `CODEX_GCLOUD_CONFIG_SRC` → `TOOLBELT_GCLOUD_CONFIG_SRC`). Codex-tool internals in the entrypoint (`CODEX_HOME`, `CODEX_AUTH_JSON_SRC`, `CODEX_CONFIG_TOML_SRC`, `CODEX_SHOW_MOTD`) are unchanged.
 - Renamed `container/codex-entrypoint.sh` → `container/toolbelt-entrypoint.sh` and `/opt/codex-baseline/scripts/` → `/opt/toolbelt/scripts/`.

@@ -293,8 +293,13 @@ bootstrap_codex_home() {
   mkdir -p "${CODEX_HOME}"
   chmod 700 "${CODEX_HOME}" 2>/dev/null || true
 
-  copy_secret "${AUTH_SRC}" "auth.json" "${CODEX_HOME}/auth.json" || true
-  copy_secret "${CONFIG_SRC}" "config.toml" "${CODEX_HOME}/config.toml" || true
+  # Try directory-based copy first (unified pattern), fall back to individual files.
+  if [[ -d "/run/secrets/codex-config" ]]; then
+    copy_secret_tree "/run/secrets/codex-config" "${CODEX_HOME}" || true
+  else
+    copy_secret "${AUTH_SRC}" "auth.json" "${CODEX_HOME}/auth.json" || true
+    copy_secret "${CONFIG_SRC}" "config.toml" "${CODEX_HOME}/config.toml" || true
+  fi
 
   # Optional fallback for API-key auth when auth.json is not mounted.
   if [[ ! -f "${CODEX_HOME}/auth.json" && -n "${OPENAI_API_KEY:-}" ]]; then
