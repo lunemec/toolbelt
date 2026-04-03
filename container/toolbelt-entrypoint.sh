@@ -307,41 +307,63 @@ bootstrap_codex_home() {
 
 bootstrap_claude_home() {
   local claude_home="${CODER_HOME}/.claude"
-  local direct_mount=0
 
-  if mountpoint -q "${claude_home}" 2>/dev/null; then
-    direct_mount=1
-  fi
+  mkdir -p "${claude_home}"
+  chmod 700 "${claude_home}" 2>/dev/null || true
+  copy_secret_tree "${CLAUDE_CONFIG_SRC}" "${claude_home}" || true
 
-  if [[ "${direct_mount}" -eq 0 ]]; then
-    mkdir -p "${claude_home}"
-    chmod 700 "${claude_home}" 2>/dev/null || true
-    copy_secret_tree "${CLAUDE_CONFIG_SRC}" "${claude_home}" || true
-
-    # Rewrite host home paths in plugin config to container paths.
-    # Host paths like /Users/foo/.claude/plugins/... must become /home/coder/.claude/plugins/...
-    local f host_home
-    for f in "${claude_home}/plugins/installed_plugins.json" "${claude_home}/plugins/known_marketplaces.json"; do
-      [[ -f "$f" ]] || continue
-      host_home="$(python3 - "$f" <<'PY'
+  # Rewrite host home paths in plugin/settings config to container paths.
+  # Host paths like /Users/foo/.claude/plugins/... must become /home/coder/.claude/plugins/...
+  local f host_home
+  for f in "${claude_home}/plugins/installed_plugins.json" "${claude_home}/plugins/known_marketplaces.json" "${claude_home}/settings.json"; do
+    [[ -f "$f" ]] || continue
+    host_home="$(python3 - "$f" <<'PY'
 import json, sys
+
+def find_via_plugin_keys(data):
+    """Strategy 1: scan installPath/installLocation keys (plugin JSONs)."""
+    for v in (data.get("plugins", {}).values() if "plugins" in data else data.values()):
+        obj = v[0] if isinstance(v, list) else v
+        if not isinstance(obj, dict):
+            continue
+        for key in ("installPath", "installLocation"):
+            p = obj.get(key, "")
+            if "/.claude/" in p:
+                return p.split("/.claude/")[0]
+    return None
+
+def find_via_recursive_scan(node):
+    """Strategy 2: walk all string values for /.claude/ (settings.json etc.)."""
+    if isinstance(node, str):
+        if "/.claude/" in node:
+            # Extract the absolute path prefix, not surrounding text.
+            # E.g. "sh /Users/lulu/.claude/foo" -> "/Users/lulu"
+            import re
+            m = re.search(r'(/\S+?)/\.claude/', node)
+            if m:
+                return m.group(1)
+    elif isinstance(node, dict):
+        for v in node.values():
+            result = find_via_recursive_scan(v)
+            if result is not None:
+                return result
+    elif isinstance(node, list):
+        for item in node:
+            result = find_via_recursive_scan(item)
+            if result is not None:
+                return result
+    return None
+
 with open(sys.argv[1]) as fh:
     data = json.load(fh)
-for v in (data.get("plugins", {}).values() if "plugins" in data else data.values()):
-    obj = v[0] if isinstance(v, list) else v
-    if not isinstance(obj, dict):
-        continue
-    for key in ("installPath", "installLocation"):
-        p = obj.get(key, "")
-        if "/.claude/" in p:
-            print(p.split("/.claude/")[0])
-            sys.exit(0)
+home = find_via_plugin_keys(data) or find_via_recursive_scan(data)
+if home:
+    print(home)
 PY
-      )" || continue
-      [[ -n "${host_home}" && "${host_home}" != "${CODER_HOME}" ]] || continue
-      sed -i "s|${host_home}|${CODER_HOME}|g" "$f" 2>/dev/null || true
-    done
-  fi
+    )" || continue
+    [[ -n "${host_home}" && "${host_home}" != "${CODER_HOME}" ]] || continue
+    sed -i "s|${host_home}|${CODER_HOME}|g" "$f" 2>/dev/null || true
+  done
 
   # .claude.json is always copied from secrets (not direct-mounted) so we can
   # patch host-specific fields like installMethod without modifying host files.
@@ -558,6 +580,22 @@ if [[ -n "${TOOLBELT_WITH_FORGE}" && "${TOOLBELT_PROVIDER}" != "forge" ]]; then
   bootstrap_forge_home
 fi
 bootstrap_cloud_tool_homes
+
+# Point GWS/gcloud credential env vars at the writable hydrated copies
+# instead of the read-only /run/secrets/ mounts so token refresh can write.
+if [[ "${TOOLBELT_GWS_CREDENTIALS_AVAILABLE:-}" == "1" ]]; then
+  local_gws_creds="${CODER_HOME}/.config/gws/credentials.json"
+  if [[ -f "${local_gws_creds}" ]]; then
+    export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE="${local_gws_creds}"
+  fi
+fi
+if [[ "${TOOLBELT_GWS_ADC_AVAILABLE:-}" == "1" ]]; then
+  local_adc="${CODER_HOME}/.config/gcloud/application_default_credentials.json"
+  if [[ -f "${local_adc}" ]]; then
+    export GOOGLE_APPLICATION_CREDENTIALS="${local_adc}"
+  fi
+fi
+
 bootstrap_opencode_home
 install_gws_wrapper
 align_coder_identity

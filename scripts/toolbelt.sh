@@ -62,7 +62,8 @@ Description:
 
 Providers:
   codex                 Mount Codex credentials (~/.codex/auth.json, config.toml)
-  claude                Mount Claude config (~/.claude/) and pass ANTHROPIC_API_KEY
+  claude                Mount Claude config (~/.claude/) read-only; config is hard-copied
+                        into the container at startup and changes do not persist to the host
   forge                 Mount ForgeCode config (~/forge/) for multi-provider AI coding
 
 Options:
@@ -701,7 +702,7 @@ build_mount_args() {
     local claude_abs_source claude_json_abs_source
     claude_abs_source="$(abs_path "$CLAUDE_DIR_SRC")"
     if [[ -d "$claude_abs_source" ]]; then
-      args+=( -v "${claude_abs_source}:${HOME}/.claude" )
+      args+=( -v "${claude_abs_source}:/run/secrets/claude-config:ro" )
     fi
     claude_json_abs_source="$(abs_path "$CLAUDE_JSON_SRC")"
     if [[ -f "$claude_json_abs_source" ]]; then
@@ -781,6 +782,9 @@ build_mount_args() {
       echo "requested -kimaki/--kimaki but Kimaki data directory is not available: $KIMAKI_SRC" >&2
       exit 1
     fi
+    # Kimaki is intentionally mounted RW (no :ro) for data persistence.
+    # Unlike Claude/Codex/Forge configs, Kimaki data is path-independent and
+    # the user expects conversation history to persist across container runs.
     args+=( -v "${kimaki_abs_source}:/home/coder/.kimaki" )
   fi
 
@@ -879,11 +883,11 @@ build_env_args() {
   fi
 
   if [[ -n "${GWS_EXPORTED_CREDENTIALS}" ]]; then
-    args+=( -e "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${GWS_CREDENTIALS_DEST}" )
+    args+=( -e "TOOLBELT_GWS_CREDENTIALS_AVAILABLE=1" )
   fi
 
   if [[ -n "${GWS_ADC_SOURCE}" ]]; then
-    args+=( -e "GOOGLE_APPLICATION_CREDENTIALS=${GWS_ADC_DEST}" )
+    args+=( -e "TOOLBELT_GWS_ADC_AVAILABLE=1" )
   fi
 
   if [[ "$WITH_OPENCODE" -eq 1 ]]; then

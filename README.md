@@ -116,10 +116,10 @@ Behavior summary:
 - `codex` provider: `/root/.codex` is mounted as tmpfs (`512m` default); `~/.codex/auth.json` and `~/.codex/config.toml` are mounted read-only when present.
 - `claude` provider: `~/.claude/` is mounted read-only to `/run/secrets/claude-config`; `ANTHROPIC_API_KEY` is passed through when set on the host.
 - `forge` provider: `~/forge/` is mounted read-only to `/run/secrets/forge-config`; entrypoint hydrates `/home/coder/.forge/`.
-- Writable direct host mounts such as workspace paths, direct Claude config mounts, and `-kimaki` now inherit the invoking host UID/GID via the entrypoint so routine writes do not require `sudo`.
+- Writable direct host mounts such as workspace paths and `-kimaki` now inherit the invoking host UID/GID via the entrypoint so routine writes do not require `sudo`.
 - `-forge` / `--forge` (claude provider only): co-mounts ForgeCode config alongside Claude config so both CLIs are available with credentials in the same session.
 - `-gcloud` / `--gcloud` mounts host `~/.config/gcloud` read-only to `/run/secrets/gcloud-config`; entrypoint hydrates `/root/.config/gcloud`.
-- `-gws` / `--gws` mounts host `~/.config/gws`, exports portable host `gws` credentials when available, and sets `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/run/secrets/gws-credentials/credentials.json` inside the container.
+- `-gws` / `--gws` mounts host `~/.config/gws`, exports portable host `gws` credentials when available, and sets `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` to the writable hydrated copy inside the container.
 - `-gws` / `--gws` still hydrates `~/.config/gws` for compatibility and uses ADC as fallback when exported credentials are unavailable.
 - `-opencode` / `--opencode` mounts host `~/.config/opencode` as read-only runtime input at `/run/secrets/opencode-config`; entrypoint hydrates `/root/.config/opencode` so the same authorized providers are visible inside the container.
 - `-opencode` / `--opencode` fails fast when `~/.config/opencode` (or `TOOLBELT_OPENCODE_CONFIG_SRC`) is unavailable.
