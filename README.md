@@ -14,9 +14,12 @@ Installed toolchains and CLIs include:
 - Go (official tarball install)
 - Rust (`rustup`, `cargo`, `rustc`)
 - Dev/system tools: `git`, Docker client tooling (`docker`, `docker buildx`, Compose v2 via both `docker compose` and `docker-compose`), `iptables`, `fzf`, `rg`, `fd`, `jq`, `yq`, `cloc`, `sloccount`, `hyperfine`, `wrk`, `ab`, `hey`, `ghz`, `grpcurl`, `httpie`, `xh`, `curlie`, `wget`, `aria2`, `entr`, `ncdu`, `tmux`, `shellcheck`, `shfmt`, and more
+- Testing: `playwright` (Chromium, via `@playwright/test`)
 - Cloud/Kubernetes CLIs: `gcloud`, `gke-gcloud-auth-plugin`, `kubectl`, `kubectx`, `kubens`
+- Git platform CLIs: `gh` (GitHub CLI), `glab` (GitLab CLI) — token-based auth, no host config mounting
 - AI CLIs: `codex`, `claude`, `gemini`, `opencode`, `forge` (ForgeCode), and Cursor Agent as `cursor` (`agent`/`cursor-agent` aliases)
 - Workspace CLIs: `ralph`, `openclaw`, `kimaki`, and `@googleworkspace/cli`
+- MCP tools: `context-mode` (context window management for AI agents)
 - `codex` wrapper and `codex-real`
 
 The `codex` wrapper is preserved as:
@@ -70,7 +73,8 @@ Common variants:
 command -v node npm pnpm python3 pip3 uv poetry go rustc cargo \
   fzf rg fd jq yq cloc sloccount hyperfine wrk ab hey ghz grpcurl http xh curlie wget aria2c entr ncdu \
   gcloud gke-gcloud-auth-plugin kubectl kubectx kubens docker docker-compose iptables \
-  codex codex-real claude claude-real forge gemini opencode cursor agent cursor-agent openclaw kimaki
+  codex codex-real claude claude-real forge gemini opencode cursor agent cursor-agent openclaw kimaki \
+  gh glab context-mode && npx playwright --version
 ```
 
 ## Selective Mount Workflow
@@ -106,6 +110,46 @@ scripts/toolbelt.sh codex -opencode ./directory1 ./directory2
 scripts/toolbelt.sh claude -k8s ./directory1 -- bash -lc 'ls -la /workspace'
 ```
 
+### GitHub and GitLab CLI Access
+
+The `-github` and `-gitlab` flags provide token-based authentication for `gh` and `glab` inside the container. No host config directories are mounted — only the token is passed as an environment variable, keeping agent access scoped to exactly the permissions you grant.
+
+Token resolution order (highest priority first):
+
+1. **Inline flag value**: `-github "ghp_xxx"` / `-gitlab "glpat-xxx"`
+2. **Environment variable**: `GH_TOKEN` / `GLAB_TOKEN` (or `GITLAB_TOKEN`)
+3. **Project `.toolbelt.env` file**: auto-discovered in the mounted project directory
+
+```bash
+# Inline tokens
+scripts/toolbelt.sh codex -github "ghp_xxx" -gitlab "glpat-xxx" ./my-project
+
+# Environment variables (works well with direnv)
+GH_TOKEN=ghp_xxx GLAB_TOKEN=glpat-xxx scripts/toolbelt.sh codex -github -gitlab ./my-project
+
+# Per-project .toolbelt.env file (add to .gitignore!)
+# ./my-project/.toolbelt.env:
+#   GH_TOKEN=ghp_xxx
+#   GLAB_TOKEN=glpat-xxx
+scripts/toolbelt.sh codex -github -gitlab ./my-project
+```
+
+The `.toolbelt.env` file uses simple `KEY=VALUE` format (one per line, `#` comments supported). Only `GH_TOKEN` and `GLAB_TOKEN` keys are read. Add `.toolbelt.env` to your `.gitignore` to avoid committing tokens.
+
+**Generating a limited-scope GitLab token:**
+
+1. Go to GitLab > Settings > Access Tokens (`https://gitlab.com/-/user_settings/personal_access_tokens`)
+2. Create a token named e.g. `toolbelt-agent` with an expiration date
+3. Select minimal scopes: `read_api` for read-only access, add `read_repository` for clone/fetch, or `api` for full access
+4. Copy the `glpat-...` value
+
+**Generating a limited-scope GitHub token:**
+
+1. Go to GitHub > Settings > Developer settings > Fine-grained tokens (`https://github.com/settings/tokens?type=beta`)
+2. Create a token named e.g. `toolbelt-agent` with an expiration date
+3. Scope it to specific repositories and select only the permissions agents need (e.g. Issues: read, Pull requests: read)
+4. Copy the `github_pat_...` or `ghp_...` value
+
 Behavior summary:
 - A provider subcommand (`codex`, `claude`, or `forge`) is required as the first argument.
 - If no positional paths are provided, the current directory is mounted at `/workspace`.
@@ -128,6 +172,7 @@ Behavior summary:
 - Shell-wrapped launcher commands such as `-- bash -lc 'gws ...'` intentionally skip host-side scope preflight because the launcher cannot infer the eventual `gws` method safely.
 - After rebuilding the image, the container entrypoint also installs an experimental `gws` wrapper that preflights direct in-container `gws <service> <resource> <method>` calls and appends a scope hint if a raw `403 insufficientPermissions` still bubbles up.
 - `-k8s` / `--k8s` mounts host `~/.kube/config` read-only to `/run/secrets/kube-config`; entrypoint hydrates `/root/.kube/config`.
+- `-github` / `--github` and `-gitlab` / `--gitlab` pass `GH_TOKEN` / `GLAB_TOKEN` into the container as environment variables. No host config directories are mounted. Tokens are resolved from inline flag values, host env vars, or a `.toolbelt.env` file in the project directory.
 - Override credential source paths with `TOOLBELT_CLAUDE_DIR_SRC`, `TOOLBELT_FORGE_DIR_SRC`, `TOOLBELT_GCLOUD_CONFIG_SRC`, `TOOLBELT_GWS_CONFIG_SRC`, `TOOLBELT_OPENCODE_CONFIG_SRC`, `TOOLBELT_KIMAKI_CONFIG_SRC`, and `TOOLBELT_KUBECONFIG_SRC`.
 
 Troubleshooting:
@@ -202,6 +247,7 @@ toolbelt/
     ├── gws-scope-guard.sh
     ├── toolbelt.sh
     ├── verify_gws_scope_guard_contract.sh
+    ├── verify_toolbelt_claude_contract.sh
     ├── verify_toolbelt_docker_contract.sh
     ├── verify_toolbelt_gws_scope_contract.sh
     ├── verify_toolbelt_kimaki_contract.sh

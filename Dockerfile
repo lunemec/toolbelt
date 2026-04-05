@@ -31,7 +31,7 @@ RUN set -eux; \
     arm64) glab_arch='arm64' ;; \
     *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
   esac; \
-  GLAB_VERSION="$(curl -fsSL https://api.github.com/repos/gitlab-org/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
+  GLAB_VERSION="$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases | jq -r '.[0].tag_name' | sed 's/^v//')"; \
   echo "Installing glab ${GLAB_VERSION}"; \
   curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${glab_arch}.tar.gz" \
     -o /tmp/glab.tar.gz; \
@@ -83,9 +83,11 @@ RUN python3 -m venv /opt/voice-stt \
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
-RUN npm install -g @openai/codex @anthropic-ai/claude-code @google/gemini-cli opencode-ai @ralph-orchestrator/ralph-cli @googleworkspace/cli @aisuite/chub openclaw kimaki context-mode \
+RUN npm install -g @openai/codex @anthropic-ai/claude-code @google/gemini-cli opencode-ai @ralph-orchestrator/ralph-cli @googleworkspace/cli @aisuite/chub openclaw kimaki context-mode @playwright/test \
   && mv /usr/local/bin/codex /usr/local/bin/codex-real \
   && mv /usr/local/bin/claude /usr/local/bin/claude-real
+
+RUN npx playwright install --with-deps chromium
 
 RUN set -eux; \
   arch="$(dpkg --print-architecture)"; \
@@ -186,7 +188,8 @@ RUN set -eux; \
   command -v voice-stt-start voice-stt-stop voice-stt-once; \
   ralph --version; \
   context-mode --version; \
-  gh --version; glab --version
+  gh --version; glab --version; \
+  npx playwright --version
 
 # Default: fully automatic, no sandbox/approvals (for isolated container use only)
 RUN cat >/usr/local/bin/codex <<'EOF'

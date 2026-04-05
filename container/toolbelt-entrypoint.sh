@@ -13,8 +13,6 @@ GCLOUD_CONFIG_SRC="${GCLOUD_CONFIG_SRC:-/run/secrets/gcloud-config}"
 GWS_CONFIG_SRC="${GWS_CONFIG_SRC:-/run/secrets/gws-config}"
 GWS_CREDENTIALS_SRC="${GWS_CREDENTIALS_SRC:-/run/secrets/gws-credentials}"
 KUBECONFIG_SRC="${KUBECONFIG_SRC:-/run/secrets/kube-config}"
-GH_CONFIG_SRC="${GH_CONFIG_SRC:-/run/secrets/gh-config}"
-GLAB_CONFIG_SRC="${GLAB_CONFIG_SRC:-/run/secrets/glab-config}"
 OPENCODE_CONFIG_SRC="${OPENCODE_CONFIG_SRC:-/run/secrets/opencode-config}"
 TOOLBELT_PROVIDER="${TOOLBELT_PROVIDER:-codex}"
 CLAUDE_CONFIG_SRC="${CLAUDE_CONFIG_SRC:-/run/secrets/claude-config}"
@@ -419,16 +417,6 @@ bootstrap_cloud_tool_homes() {
   mkdir -p "${kube_home}"
   chmod 700 "${kube_home}" 2>/dev/null || true
   copy_secret "${KUBECONFIG_SRC}" "config" "${kube_home}/config" || true
-
-  local gh_home="${CODER_HOME}/.config/gh"
-  mkdir -p "${gh_home}"
-  chmod 700 "${gh_home}" 2>/dev/null || true
-  copy_secret_tree "${GH_CONFIG_SRC}" "${gh_home}" || true
-
-  local glab_home="${CODER_HOME}/.config/glab-cli"
-  mkdir -p "${glab_home}"
-  chmod 700 "${glab_home}" 2>/dev/null || true
-  copy_secret_tree "${GLAB_CONFIG_SRC}" "${glab_home}" || true
 }
 
 bootstrap_opencode_home() {
@@ -493,8 +481,8 @@ feature_enabled() {
     gcloud)   [[ -d /run/secrets/gcloud-config ]] ;;
     gws)      [[ -d /run/secrets/gws-config ]] ;;
     k8s)      [[ -e /run/secrets/kube-config ]] ;;
-    github)   [[ -d /run/secrets/gh-config ]] ;;
-    gitlab)   [[ -d /run/secrets/glab-config ]] ;;
+    github)   [[ -n "${GH_TOKEN:-}" ]] ;;
+    gitlab)   [[ -n "${GLAB_TOKEN:-}" ]] ;;
     opencode) [[ -d /run/secrets/opencode-config ]] ;;
     kimaki)   mountpoint -q /home/coder/.kimaki 2>/dev/null ;;
     forge)    [[ "${TOOLBELT_WITH_FORGE:-}" == "1" ]] || [[ -d /run/secrets/forge-config ]] ;;

@@ -22,6 +22,8 @@ WITH_KIMAKI=0
 WITH_K8S=0
 WITH_GITHUB=0
 WITH_GITLAB=0
+GITHUB_TOKEN_VALUE=""
+GITLAB_TOKEN_VALUE=""
 WITH_FORGE=0
 AUTO_REMOVE=1
 MOUNTS=()
@@ -37,8 +39,6 @@ GWS_SRC="${TOOLBELT_GWS_CONFIG_SRC:-$HOME/.config/gws}"
 OPENCODE_CONFIG_SRC="${TOOLBELT_OPENCODE_CONFIG_SRC:-$HOME/.config/opencode}"
 KIMAKI_SRC="${TOOLBELT_KIMAKI_CONFIG_SRC:-$HOME/.kimaki}"
 KUBECONFIG_SRC="${TOOLBELT_KUBECONFIG_SRC:-$HOME/.kube/config}"
-GITHUB_CONFIG_SRC="${TOOLBELT_GITHUB_CONFIG_SRC:-$HOME/.config/gh}"
-GITLAB_CONFIG_SRC="${TOOLBELT_GITLAB_CONFIG_SRC:-$HOME/.config/glab-cli}"
 FORGE_DIR_SRC="${TOOLBELT_FORGE_DIR_SRC:-$HOME/forge}"
 GWS_RUNTIME_DIR=""
 GWS_EXPORTED_CREDENTIALS=""
@@ -72,8 +72,12 @@ Options:
                      Mount host OpenCode config into /run/secrets/opencode-config (read-only) and fail if it is unavailable
   -kimaki, --kimaki   Mount host Kimaki data dir into /home/coder/.kimaki (read-write)
   -k8s, --k8s         Mount host kubeconfig into /run/secrets/kube-config (read-only)
-  -github, --github   Mount host GitHub CLI config (~/.config/gh) into container (read-only)
-  -gitlab, --gitlab   Mount host GitLab CLI config (~/.config/glab-cli) into container (read-only)
+  -github, --github [TOKEN]
+                     Enable GitHub CLI inside the container via GH_TOKEN.
+                     Token resolution: inline value > GH_TOKEN env var > .toolbelt.env
+  -gitlab, --gitlab [TOKEN]
+                     Enable GitLab CLI inside the container via GLAB_TOKEN.
+                     Token resolution: inline value > GLAB_TOKEN env var > .toolbelt.env
   -forge, --forge     Also mount ForgeCode config (~/forge/) when using another provider
   -image, --image IMAGE
                      Container image (default: toolbelt:latest)
@@ -96,10 +100,15 @@ Environment overrides:
   TOOLBELT_OPENCODE_CONFIG_SRC
   TOOLBELT_KIMAKI_CONFIG_SRC
   TOOLBELT_KUBECONFIG_SRC
-  TOOLBELT_GITHUB_CONFIG_SRC
-  TOOLBELT_GITLAB_CONFIG_SRC
   TOOLBELT_FORGE_DIR_SRC
   ANTHROPIC_API_KEY
+  GH_TOKEN
+  GLAB_TOKEN / GITLAB_TOKEN
+
+Token discovery (highest priority first):
+  1. Inline flag value:    -github "ghp_xxx" / -gitlab "glpat-xxx"
+  2. Environment variable: GH_TOKEN / GLAB_TOKEN (or GITLAB_TOKEN)
+  3. Project .toolbelt.env file in mounted directory
 
 Examples:
   toolbelt codex
@@ -107,6 +116,8 @@ Examples:
   toolbelt forge
   toolbelt forge -docker ./my-project
   toolbelt claude -forge
+  toolbelt codex -github -gitlab ./my-project
+  toolbelt codex -github "ghp_xxx" -gitlab "glpat-xxx" ./my-project
   toolbelt codex -docker -gcloud -gws -kimaki -k8s ./directory1 ./directory2
   toolbelt claude -k8s ./directory1 -- bash -lc 'ls -la /workspace'
 USAGE
@@ -606,10 +617,20 @@ parse_args() {
       -github|--github)
         WITH_GITHUB=1
         shift
+        # Consume optional inline token (next arg that doesn't look like a flag or path).
+        if [[ $# -gt 0 && "$1" != -* && "$1" != .* && "$1" != /* ]]; then
+          GITHUB_TOKEN_VALUE="$1"
+          shift
+        fi
         ;;
       -gitlab|--gitlab)
         WITH_GITLAB=1
         shift
+        # Consume optional inline token (next arg that doesn't look like a flag or path).
+        if [[ $# -gt 0 && "$1" != -* && "$1" != .* && "$1" != /* ]]; then
+          GITLAB_TOKEN_VALUE="$1"
+          shift
+        fi
         ;;
       -forge|--forge)
         WITH_FORGE=1
@@ -657,6 +678,59 @@ parse_args() {
         ;;
     esac
   done
+}
+
+resolve_cli_tokens() {
+  # Token precedence: 1) inline flag value  2) host env var  3) .toolbelt.env
+  #
+  # .toolbelt.env discovery: scan each mounted directory for a .toolbelt.env
+  # file. Only GH_TOKEN and GLAB_TOKEN keys are read.  First file wins.
+  local env_file="" abs_src
+
+  for src in "${MOUNTS[@]}"; do
+    abs_src="$(abs_path "$src" 2>/dev/null || echo "$src")"
+    if [[ -f "${abs_src}/.toolbelt.env" ]]; then
+      env_file="${abs_src}/.toolbelt.env"
+      break
+    fi
+  done
+
+  # Read tokens from .toolbelt.env (lowest priority — only fills blanks).
+  if [[ -n "${env_file}" ]]; then
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      # Skip comments and blank lines.
+      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+      [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+      key="${line%%=*}"
+      value="${line#*=}"
+      # Strip optional surrounding quotes.
+      value="${value#\"}" ; value="${value%\"}"
+      value="${value#\'}" ; value="${value%\'}"
+      case "$key" in
+        GH_TOKEN)   [[ -z "${GITHUB_TOKEN_VALUE}" ]] && GITHUB_TOKEN_VALUE="$value" ;;
+        GLAB_TOKEN) [[ -z "${GITLAB_TOKEN_VALUE}" ]] && GITLAB_TOKEN_VALUE="$value" ;;
+      esac
+    done < "$env_file"
+  fi
+
+  # Host env vars (middle priority — override .toolbelt.env but not inline).
+  if [[ -z "${GITHUB_TOKEN_VALUE}" ]]; then
+    GITHUB_TOKEN_VALUE="${GH_TOKEN:-}"
+  fi
+  if [[ -z "${GITLAB_TOKEN_VALUE}" ]]; then
+    GITLAB_TOKEN_VALUE="${GLAB_TOKEN:-${GITLAB_TOKEN:-}}"
+  fi
+
+  # Validate: if a flag was requested but no token was found, error out.
+  if [[ "$WITH_GITHUB" -eq 1 && -z "${GITHUB_TOKEN_VALUE}" ]]; then
+    echo "error: -github requires a token. Provide it inline (-github TOKEN), via GH_TOKEN env var, or in .toolbelt.env" >&2
+    exit 1
+  fi
+  if [[ "$WITH_GITLAB" -eq 1 && -z "${GITLAB_TOKEN_VALUE}" ]]; then
+    echo "error: -gitlab requires a token. Provide it inline (-gitlab TOKEN), via GLAB_TOKEN env var, or in .toolbelt.env" >&2
+    exit 1
+  fi
 }
 
 build_mount_args() {
@@ -803,26 +877,6 @@ build_mount_args() {
     args+=( -v "${kubeconfig_abs_source}:/run/secrets/kube-config:ro" )
   fi
 
-  if [[ "$WITH_GITHUB" -eq 1 ]]; then
-    local github_abs_source
-    github_abs_source="$(abs_path "$GITHUB_CONFIG_SRC")"
-    if [[ ! -d "$github_abs_source" ]]; then
-      echo "requested -github/--github but GitHub CLI config directory is not available: $GITHUB_CONFIG_SRC" >&2
-      exit 1
-    fi
-    args+=( -v "${github_abs_source}:/run/secrets/gh-config:ro" )
-  fi
-
-  if [[ "$WITH_GITLAB" -eq 1 ]]; then
-    local gitlab_abs_source
-    gitlab_abs_source="$(abs_path "$GITLAB_CONFIG_SRC")"
-    if [[ ! -d "$gitlab_abs_source" ]]; then
-      echo "requested -gitlab/--gitlab but GitLab CLI config directory is not available: $GITLAB_CONFIG_SRC" >&2
-      exit 1
-    fi
-    args+=( -v "${gitlab_abs_source}:/run/secrets/glab-config:ro" )
-  fi
-
   printf '%s\n' "${args[@]}"
 }
 
@@ -904,6 +958,14 @@ build_env_args() {
     args+=( -e "TOOLBELT_WITH_FORGE=1" )
   fi
 
+  if [[ -n "${GITHUB_TOKEN_VALUE}" ]]; then
+    args+=( -e "GH_TOKEN=${GITHUB_TOKEN_VALUE}" )
+  fi
+
+  if [[ -n "${GITLAB_TOKEN_VALUE}" ]]; then
+    args+=( -e "GLAB_TOKEN=${GITLAB_TOKEN_VALUE}" )
+  fi
+
   printf '%s\n' "${args[@]}"
 }
 
@@ -917,6 +979,7 @@ run_container() {
 
   prepare_gws_runtime_inputs
   prepare_claude_credentials || true
+  resolve_cli_tokens
   preflight_gws_scope_requirements
   mount_output="$(build_mount_args)"
   env_output="$(build_env_args)"
