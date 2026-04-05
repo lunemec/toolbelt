@@ -73,11 +73,11 @@ Options:
   -kimaki, --kimaki   Mount host Kimaki data dir into /home/coder/.kimaki (read-write)
   -k8s, --k8s         Mount host kubeconfig into /run/secrets/kube-config (read-only)
   -github, --github [TOKEN]
-                     Enable GitHub CLI inside the container via GH_TOKEN.
-                     Token resolution: inline value > GH_TOKEN env var > .toolbelt.env
+                     Enable GitHub CLI inside the container via GITHUB_TOKEN.
+                     Token resolution: inline value > GITHUB_TOKEN env var > .toolbelt.env
   -gitlab, --gitlab [TOKEN]
-                     Enable GitLab CLI inside the container via GLAB_TOKEN.
-                     Token resolution: inline value > GLAB_TOKEN env var > .toolbelt.env
+                     Enable GitLab CLI inside the container via GITLAB_TOKEN.
+                     Token resolution: inline value > GITLAB_TOKEN env var > .toolbelt.env
   -forge, --forge     Also mount ForgeCode config (~/forge/) when using another provider
   -image, --image IMAGE
                      Container image (default: toolbelt:latest)
@@ -102,13 +102,13 @@ Environment overrides:
   TOOLBELT_KUBECONFIG_SRC
   TOOLBELT_FORGE_DIR_SRC
   ANTHROPIC_API_KEY
-  GH_TOKEN
-  GLAB_TOKEN / GITLAB_TOKEN
+  GITHUB_TOKEN (or GH_TOKEN)
+  GITLAB_TOKEN (or GLAB_TOKEN)
 
 Token discovery (highest priority first):
   1. Inline flag value:    -github "ghp_xxx" / -gitlab "glpat-xxx"
-  2. Environment variable: GH_TOKEN / GLAB_TOKEN (or GITLAB_TOKEN)
-  3. Project .toolbelt.env file in mounted directory
+  2. Environment variable: GITHUB_TOKEN (or GH_TOKEN) / GITLAB_TOKEN (or GLAB_TOKEN)
+  3. Project .toolbelt.env file in mounted directory (GITHUB_TOKEN / GITLAB_TOKEN keys)
 
 Examples:
   toolbelt codex
@@ -684,7 +684,7 @@ resolve_cli_tokens() {
   # Token precedence: 1) inline flag value  2) host env var  3) .toolbelt.env
   #
   # .toolbelt.env discovery: scan each mounted directory for a .toolbelt.env
-  # file. Only GH_TOKEN and GLAB_TOKEN keys are read.  First file wins.
+  # file. Only GITHUB_TOKEN and GITLAB_TOKEN keys are read.  First file wins.
   local env_file="" abs_src
 
   for src in "${MOUNTS[@]}"; do
@@ -708,15 +708,15 @@ resolve_cli_tokens() {
       value="${value#\"}" ; value="${value%\"}"
       value="${value#\'}" ; value="${value%\'}"
       case "$key" in
-        GH_TOKEN)   [[ -z "${GITHUB_TOKEN_VALUE}" ]] && GITHUB_TOKEN_VALUE="$value" ;;
-        GLAB_TOKEN) [[ -z "${GITLAB_TOKEN_VALUE}" ]] && GITLAB_TOKEN_VALUE="$value" ;;
+        GITHUB_TOKEN) [[ -z "${GITHUB_TOKEN_VALUE}" ]] && GITHUB_TOKEN_VALUE="$value" ;;
+        GITLAB_TOKEN) [[ -z "${GITLAB_TOKEN_VALUE}" ]] && GITLAB_TOKEN_VALUE="$value" ;;
       esac
     done < "$env_file"
   fi
 
   # Host env vars (middle priority — override .toolbelt.env but not inline).
   if [[ -z "${GITHUB_TOKEN_VALUE}" ]]; then
-    GITHUB_TOKEN_VALUE="${GH_TOKEN:-}"
+    GITHUB_TOKEN_VALUE="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   fi
   if [[ -z "${GITLAB_TOKEN_VALUE}" ]]; then
     GITLAB_TOKEN_VALUE="${GLAB_TOKEN:-${GITLAB_TOKEN:-}}"
@@ -724,11 +724,11 @@ resolve_cli_tokens() {
 
   # Validate: if a flag was requested but no token was found, error out.
   if [[ "$WITH_GITHUB" -eq 1 && -z "${GITHUB_TOKEN_VALUE}" ]]; then
-    echo "error: -github requires a token. Provide it inline (-github TOKEN), via GH_TOKEN env var, or in .toolbelt.env" >&2
+    echo "error: -github requires a token. Provide it inline (-github TOKEN), via GITHUB_TOKEN env var, or in .toolbelt.env" >&2
     exit 1
   fi
   if [[ "$WITH_GITLAB" -eq 1 && -z "${GITLAB_TOKEN_VALUE}" ]]; then
-    echo "error: -gitlab requires a token. Provide it inline (-gitlab TOKEN), via GLAB_TOKEN env var, or in .toolbelt.env" >&2
+    echo "error: -gitlab requires a token. Provide it inline (-gitlab TOKEN), via GITLAB_TOKEN env var, or in .toolbelt.env" >&2
     exit 1
   fi
 }
@@ -959,10 +959,12 @@ build_env_args() {
   fi
 
   if [[ -n "${GITHUB_TOKEN_VALUE}" ]]; then
+    args+=( -e "GITHUB_TOKEN=${GITHUB_TOKEN_VALUE}" )
     args+=( -e "GH_TOKEN=${GITHUB_TOKEN_VALUE}" )
   fi
 
   if [[ -n "${GITLAB_TOKEN_VALUE}" ]]; then
+    args+=( -e "GITLAB_TOKEN=${GITLAB_TOKEN_VALUE}" )
     args+=( -e "GLAB_TOKEN=${GITLAB_TOKEN_VALUE}" )
   fi
 

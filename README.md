@@ -117,7 +117,7 @@ The `-github` and `-gitlab` flags provide token-based authentication for `gh` an
 Token resolution order (highest priority first):
 
 1. **Inline flag value**: `-github "ghp_xxx"` / `-gitlab "glpat-xxx"`
-2. **Environment variable**: `GH_TOKEN` / `GLAB_TOKEN` (or `GITLAB_TOKEN`)
+2. **Environment variable**: `GITHUB_TOKEN` (or `GH_TOKEN`) / `GITLAB_TOKEN` (or `GLAB_TOKEN`)
 3. **Project `.toolbelt.env` file**: auto-discovered in the mounted project directory
 
 ```bash
@@ -125,16 +125,16 @@ Token resolution order (highest priority first):
 scripts/toolbelt.sh codex -github "ghp_xxx" -gitlab "glpat-xxx" ./my-project
 
 # Environment variables (works well with direnv)
-GH_TOKEN=ghp_xxx GLAB_TOKEN=glpat-xxx scripts/toolbelt.sh codex -github -gitlab ./my-project
+GITHUB_TOKEN=ghp_xxx GITLAB_TOKEN=glpat-xxx scripts/toolbelt.sh codex -github -gitlab ./my-project
 
 # Per-project .toolbelt.env file (add to .gitignore!)
 # ./my-project/.toolbelt.env:
-#   GH_TOKEN=ghp_xxx
-#   GLAB_TOKEN=glpat-xxx
+#   GITHUB_TOKEN=ghp_xxx
+#   GITLAB_TOKEN=glpat-xxx
 scripts/toolbelt.sh codex -github -gitlab ./my-project
 ```
 
-The `.toolbelt.env` file uses simple `KEY=VALUE` format (one per line, `#` comments supported). Only `GH_TOKEN` and `GLAB_TOKEN` keys are read. Add `.toolbelt.env` to your `.gitignore` to avoid committing tokens.
+The `.toolbelt.env` file uses simple `KEY=VALUE` format (one per line, `#` comments supported). Only `GITHUB_TOKEN` and `GITLAB_TOKEN` keys are read. Add `.toolbelt.env` to your `.gitignore` to avoid committing tokens.
 
 **Generating a limited-scope GitLab token:**
 
@@ -172,7 +172,7 @@ Behavior summary:
 - Shell-wrapped launcher commands such as `-- bash -lc 'gws ...'` intentionally skip host-side scope preflight because the launcher cannot infer the eventual `gws` method safely.
 - After rebuilding the image, the container entrypoint also installs an experimental `gws` wrapper that preflights direct in-container `gws <service> <resource> <method>` calls and appends a scope hint if a raw `403 insufficientPermissions` still bubbles up.
 - `-k8s` / `--k8s` mounts host `~/.kube/config` read-only to `/run/secrets/kube-config`; entrypoint hydrates `/root/.kube/config`.
-- `-github` / `--github` and `-gitlab` / `--gitlab` pass `GH_TOKEN` / `GLAB_TOKEN` into the container as environment variables. No host config directories are mounted. Tokens are resolved from inline flag values, host env vars, or a `.toolbelt.env` file in the project directory.
+- `-github` / `--github` and `-gitlab` / `--gitlab` pass `GITHUB_TOKEN` / `GITLAB_TOKEN` into the container as environment variables. No host config directories are mounted. Tokens are resolved from inline flag values, host env vars, or a `.toolbelt.env` file in the project directory.
 - Override credential source paths with `TOOLBELT_CLAUDE_DIR_SRC`, `TOOLBELT_FORGE_DIR_SRC`, `TOOLBELT_GCLOUD_CONFIG_SRC`, `TOOLBELT_GWS_CONFIG_SRC`, `TOOLBELT_OPENCODE_CONFIG_SRC`, `TOOLBELT_KIMAKI_CONFIG_SRC`, and `TOOLBELT_KUBECONFIG_SRC`.
 
 Troubleshooting:
