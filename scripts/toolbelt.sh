@@ -25,6 +25,8 @@ WITH_GITLAB=0
 GITHUB_TOKEN_VALUE=""
 GITLAB_TOKEN_VALUE=""
 WITH_FORGE=0
+WITH_SSH=0
+SSH_KEY_DIR=""
 AUTO_REMOVE=1
 MOUNTS=()
 MOUNT_PWD_TO_WORKSPACE=0
@@ -722,6 +724,17 @@ resolve_cli_tokens() {
     GITLAB_TOKEN_VALUE="${GLAB_TOKEN:-${GITLAB_TOKEN:-}}"
   fi
 
+  # SSH key discovery: scan mounted directories for .toolbelt/ssh/
+  local abs_src_ssh
+  for src in "${MOUNTS[@]}"; do
+    abs_src_ssh="$(abs_path "$src" 2>/dev/null || echo "$src")"
+    if [[ -d "${abs_src_ssh}/.toolbelt/ssh" && -f "${abs_src_ssh}/.toolbelt/ssh/id_ed25519" ]]; then
+      SSH_KEY_DIR="${abs_src_ssh}/.toolbelt/ssh"
+      WITH_SSH=1
+      break
+    fi
+  done
+
   # Validate: if a flag was requested but no token was found, error out.
   if [[ "$WITH_GITHUB" -eq 1 && -z "${GITHUB_TOKEN_VALUE}" ]]; then
     echo "error: -github requires a token. Provide it inline (-github TOKEN), via GITHUB_TOKEN env var, or in .toolbelt.env" >&2
@@ -877,6 +890,10 @@ build_mount_args() {
     args+=( -v "${kubeconfig_abs_source}:/run/secrets/kube-config:ro" )
   fi
 
+  if [[ "$WITH_SSH" -eq 1 ]]; then
+    args+=( -v "${SSH_KEY_DIR}:/run/secrets/ssh-keys:ro" )
+  fi
+
   printf '%s\n' "${args[@]}"
 }
 
@@ -919,6 +936,7 @@ build_env_args() {
   [[ "$WITH_K8S" -eq 1 ]]         && features+=("k8s")
   [[ "$WITH_GITHUB" -eq 1 ]]      && features+=("github")
   [[ "$WITH_GITLAB" -eq 1 ]]      && features+=("gitlab")
+  [[ "$WITH_SSH" -eq 1 ]]         && features+=("ssh")
   [[ "$WITH_OPENCODE" -eq 1 ]]    && features+=("opencode")
   [[ "$WITH_KIMAKI" -eq 1 ]]      && features+=("kimaki")
   if [[ "$WITH_FORGE" -eq 1 || "$PROVIDER" == "forge" ]]; then

@@ -444,6 +444,38 @@ bootstrap_opencode_home() {
   fi
 }
 
+bootstrap_ssh() {
+  local ssh_src="/run/secrets/ssh-keys"
+  local ssh_home="${CODER_HOME}/.ssh"
+
+  if [[ ! -d "${ssh_src}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "${ssh_home}"
+  chmod 700 "${ssh_home}"
+
+  if [[ -f "${ssh_src}/id_ed25519" ]]; then
+    install -m 600 "${ssh_src}/id_ed25519" "${ssh_home}/id_ed25519"
+  fi
+  if [[ -f "${ssh_src}/id_ed25519.pub" ]]; then
+    install -m 644 "${ssh_src}/id_ed25519.pub" "${ssh_home}/id_ed25519.pub"
+  fi
+
+  # Pre-seed known_hosts for gitlab.com
+  ssh-keyscan -t ed25519,rsa gitlab.com 2>/dev/null >> "${ssh_home}/known_hosts" || true
+  chmod 644 "${ssh_home}/known_hosts"
+
+  cat > "${ssh_home}/config" <<'SSHCONF'
+Host gitlab.com
+  HostName gitlab.com
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+SSHCONF
+  chmod 600 "${ssh_home}/config"
+}
+
 install_gws_wrapper() {
   local existing_gws_path=""
   local real_gws_path="/usr/local/bin/gws-real"
@@ -483,6 +515,7 @@ feature_enabled() {
     k8s)      [[ -e /run/secrets/kube-config ]] ;;
     github)   [[ -n "${GH_TOKEN:-}" ]] ;;
     gitlab)   [[ -n "${GLAB_TOKEN:-}" ]] ;;
+    ssh)      [[ -d /run/secrets/ssh-keys ]] ;;
     opencode) [[ -d /run/secrets/opencode-config ]] ;;
     kimaki)   mountpoint -q /home/coder/.kimaki 2>/dev/null ;;
     forge)    [[ "${TOOLBELT_WITH_FORGE:-}" == "1" ]] || [[ -d /run/secrets/forge-config ]] ;;
@@ -538,8 +571,8 @@ show_motd() {
 
   # --- Features ---
   printf '%b\n' "${bold}${cyan}Features${reset}"
-  local -a feat_names=( docker gcloud gws k8s github gitlab opencode kimaki forge )
-  local -a feat_labels=("Docker" "Google Cloud" "Google Workspace" "Kubernetes" "GitHub CLI" "GitLab CLI" "OpenCode" "Kimaki" "ForgeCode")
+  local -a feat_names=( docker gcloud gws k8s github gitlab ssh opencode kimaki forge )
+  local -a feat_labels=("Docker" "Google Cloud" "Google Workspace" "Kubernetes" "GitHub CLI" "GitLab CLI" "SSH Keys" "OpenCode" "Kimaki" "ForgeCode")
   local i label_width=18 col=0 cols=3
 
   for (( i=0; i<${#feat_names[@]}; i++ )); do
@@ -573,6 +606,7 @@ if [[ -n "${TOOLBELT_WITH_FORGE}" && "${TOOLBELT_PROVIDER}" != "forge" ]]; then
   bootstrap_forge_home
 fi
 bootstrap_cloud_tool_homes
+bootstrap_ssh
 
 # Point GWS/gcloud credential env vars at the writable hydrated copies
 # instead of the read-only /run/secrets/ mounts so token refresh can write.
